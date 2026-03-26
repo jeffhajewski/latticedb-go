@@ -1,4 +1,4 @@
-package latticedb
+package engine
 
 import (
 	"errors"
@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/jeffhajewski/latticedb-go/internal/search"
+	"github.com/jeffhajewski/latticedb-go/internal/store"
 )
 
 type queryPlan struct {
@@ -25,7 +28,7 @@ type matchPattern interface {
 type nodePattern struct {
 	Var        string
 	Labels     []string
-	Properties map[string]Value
+	Properties map[string]any
 }
 
 type edgePattern struct {
@@ -81,16 +84,16 @@ type queryRow struct {
 }
 
 type boundValue struct {
-	Node *nodeRecord
-	Edge *edgeRecord
+	Node *store.NodeRecord
+	Edge *store.EdgeRecord
 }
 
 type valueExpr interface {
-	eval(row queryRow, params map[string]Value) (Value, error)
+	eval(row queryRow, params map[string]any) (any, error)
 }
 
 type literalExpr struct {
-	Value Value
+	Value any
 }
 
 type paramExpr struct {
@@ -170,7 +173,7 @@ func (plan *queryPlan) mutates() bool {
 	return plan.setClause != nil || plan.createClause != nil
 }
 
-func (plan *queryPlan) execute(tx *Tx, params map[string]Value) (QueryResult, error) {
+func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, error) {
 	rows := []queryRow{{Bindings: map[string]boundValue{}}}
 	for _, pattern := range plan.matchPatterns {
 		var err error
@@ -239,7 +242,7 @@ func parseNodePattern(text string) (nodePattern, error) {
 		return nodePattern{}, err
 	}
 
-	props := map[string]Value{}
+	props := map[string]any{}
 	propStart := findTopLevelRune(body, '{')
 	prefix := strings.TrimSpace(body)
 	if propStart >= 0 {
@@ -298,9 +301,6 @@ func parseEdgePattern(text string) (edgePattern, error) {
 	if len(edgeSegments) == 2 {
 		pattern.EdgeVar = strings.TrimSpace(edgeSegments[0])
 		pattern.EdgeType = strings.TrimSpace(edgeSegments[1])
-		if pattern.EdgeVar == "" {
-			pattern.EdgeVar = ""
-		}
 	} else {
 		pattern.EdgeVar = strings.TrimSpace(edgeSegments[0])
 	}
@@ -451,12 +451,12 @@ func parseReturnClause(text string) (*returnClause, error) {
 func (pattern nodePattern) apply(tx *Tx, rows []queryRow) ([]queryRow, error) {
 	nextRows := make([]queryRow, 0)
 	for _, row := range rows {
-		for _, nodeID := range sortedNodeIDs(tx.graph) {
+		for _, nodeID := range store.SortedNodeIDs(tx.graph) {
 			node := tx.graph.Nodes[nodeID]
-			if !labelsMatch(node, pattern.Labels) {
+			if !store.LabelsMatch(node, pattern.Labels) {
 				continue
 			}
-			if !propertiesMatch(node.Properties, pattern.Properties) {
+			if !store.PropertiesMatch(node.Properties, pattern.Properties) {
 				continue
 			}
 			if pattern.Var != "" {
@@ -481,7 +481,7 @@ func (pattern nodePattern) apply(tx *Tx, rows []queryRow) ([]queryRow, error) {
 func (pattern edgePattern) apply(tx *Tx, rows []queryRow) ([]queryRow, error) {
 	nextRows := make([]queryRow, 0)
 	for _, row := range rows {
-		for _, edgeID := range sortedEdgeIDs(tx.graph) {
+		for _, edgeID := range store.SortedEdgeIDs(tx.graph) {
 			edge := tx.graph.Edges[edgeID]
 			if pattern.EdgeType != "" && edge.Type != pattern.EdgeType {
 				continue
@@ -491,10 +491,10 @@ func (pattern edgePattern) apply(tx *Tx, rows []queryRow) ([]queryRow, error) {
 			if source == nil || target == nil {
 				continue
 			}
-			if !labelsMatch(source, pattern.Left.Labels) || !propertiesMatch(source.Properties, pattern.Left.Properties) {
+			if !store.LabelsMatch(source, pattern.Left.Labels) || !store.PropertiesMatch(source.Properties, pattern.Left.Properties) {
 				continue
 			}
-			if !labelsMatch(target, pattern.Right.Labels) || !propertiesMatch(target.Properties, pattern.Right.Properties) {
+			if !store.LabelsMatch(target, pattern.Right.Labels) || !store.PropertiesMatch(target.Properties, pattern.Right.Properties) {
 				continue
 			}
 			if !bindingMatchesNode(row, pattern.Left.Var, source) || !bindingMatchesNode(row, pattern.Right.Var, target) {
@@ -522,7 +522,7 @@ func (pattern edgePattern) apply(tx *Tx, rows []queryRow) ([]queryRow, error) {
 	return nextRows, nil
 }
 
-func (clause *whereClause) apply(rows []queryRow, params map[string]Value) ([]queryRow, error) {
+func (clause *whereClause) apply(rows []queryRow, params map[string]any) ([]queryRow, error) {
 	filtered := make([]queryRow, 0, len(rows))
 	for _, row := range rows {
 		binding, ok := row.Bindings[clause.Var]
@@ -555,7 +555,7 @@ func (clause *whereClause) apply(rows []queryRow, params map[string]Value) ([]qu
 			if !ok {
 				return nil, fmt.Errorf("vector comparison requires []float32, got %T", expected)
 			}
-			distance, err := vectorDistance(vector, queryVector)
+			distance, err := search.VectorDistance(vector, queryVector)
 			if err != nil {
 				return nil, err
 			}
@@ -578,7 +578,7 @@ func (clause *whereClause) apply(rows []queryRow, params map[string]Value) ([]qu
 			if !ok {
 				return nil, fmt.Errorf("fts comparison requires string, got %T", expected)
 			}
-			score := ftsScore(text, tokenize(queryText))
+			score := search.FTSScore(text, search.Tokenize(queryText))
 			if score <= 0 {
 				continue
 			}
@@ -604,7 +604,7 @@ func (clause *whereClause) apply(rows []queryRow, params map[string]Value) ([]qu
 	return filtered, nil
 }
 
-func (clause *setClause) apply(rows []queryRow, params map[string]Value) error {
+func (clause *setClause) apply(rows []queryRow, params map[string]any) error {
 	for _, row := range rows {
 		binding, ok := row.Bindings[clause.Var]
 		if !ok {
@@ -614,7 +614,7 @@ func (clause *setClause) apply(rows []queryRow, params map[string]Value) error {
 		if err != nil {
 			return err
 		}
-		normalized, err := normalizeValue(value)
+		normalized, err := store.NormalizeValue(value)
 		if err != nil {
 			return err
 		}
@@ -638,7 +638,7 @@ func (clause *setClause) apply(rows []queryRow, params map[string]Value) error {
 	return nil
 }
 
-func (clause *createClause) apply(tx *Tx, rows []queryRow, params map[string]Value) error {
+func (clause *createClause) apply(tx *Tx, rows []queryRow, params map[string]any) error {
 	for _, row := range rows {
 		sourceBinding, ok := row.Bindings[clause.SourceVar]
 		if !ok || sourceBinding.Node == nil {
@@ -649,13 +649,13 @@ func (clause *createClause) apply(tx *Tx, rows []queryRow, params map[string]Val
 			return fmt.Errorf("unknown target binding %q", clause.TargetVar)
 		}
 
-		props := make(map[string]Value, len(clause.Props))
+		props := make(map[string]any, len(clause.Props))
 		for key, expr := range clause.Props {
 			value, err := expr.eval(row, params)
 			if err != nil {
 				return err
 			}
-			normalized, err := normalizeValue(value)
+			normalized, err := store.NormalizeValue(value)
 			if err != nil {
 				return err
 			}
@@ -675,7 +675,7 @@ func (clause *returnClause) render(rows []queryRow) (QueryResult, error) {
 	if clause.CountAlias != "" {
 		return QueryResult{
 			Columns: []string{clause.CountAlias},
-			Rows: []map[string]Value{
+			Rows: []map[string]any{
 				{clause.CountAlias: int64(len(rows))},
 			},
 		}, nil
@@ -687,7 +687,7 @@ func (clause *returnClause) render(rows []queryRow) (QueryResult, error) {
 	}
 
 	for _, row := range rows {
-		resultRow := make(map[string]Value, len(clause.Projections))
+		resultRow := make(map[string]any, len(clause.Projections))
 		for _, projection := range clause.Projections {
 			binding, ok := row.Bindings[projection.Var]
 			if !ok {
@@ -699,26 +699,26 @@ func (clause *returnClause) render(rows []queryRow) (QueryResult, error) {
 				resultRow[projection.Alias] = nil
 				continue
 			}
-			resultRow[projection.Alias] = cloneValue(value)
+			resultRow[projection.Alias] = store.CloneValue(value)
 		}
 		result.Rows = append(result.Rows, resultRow)
 	}
 	return result, nil
 }
 
-func (expr literalExpr) eval(_ queryRow, _ map[string]Value) (Value, error) {
-	return cloneValue(expr.Value), nil
+func (expr literalExpr) eval(_ queryRow, _ map[string]any) (any, error) {
+	return store.CloneValue(expr.Value), nil
 }
 
-func (expr paramExpr) eval(_ queryRow, params map[string]Value) (Value, error) {
+func (expr paramExpr) eval(_ queryRow, params map[string]any) (any, error) {
 	value, ok := params[expr.Name]
 	if !ok {
 		return nil, fmt.Errorf("missing query parameter %q", expr.Name)
 	}
-	return normalizeValue(value)
+	return store.NormalizeValue(value)
 }
 
-func (expr variableExpr) eval(row queryRow, _ map[string]Value) (Value, error) {
+func (expr variableExpr) eval(row queryRow, _ map[string]any) (any, error) {
 	value, ok := row.Bindings[expr.Name]
 	if !ok {
 		return nil, fmt.Errorf("unknown binding %q", expr.Name)
@@ -757,8 +757,8 @@ func parseValueExpr(text string) (valueExpr, error) {
 	}
 }
 
-func parsePropertyLiteralMap(text string) (map[string]Value, error) {
-	out := make(map[string]Value)
+func parsePropertyLiteralMap(text string) (map[string]any, error) {
+	out := make(map[string]any)
 	if strings.TrimSpace(text) == "" {
 		return out, nil
 	}
@@ -1008,7 +1008,7 @@ func findMatchingBrace(text string, start int, open byte, close byte) int {
 	return -1
 }
 
-func bindingMatchesNode(row queryRow, name string, node *nodeRecord) bool {
+func bindingMatchesNode(row queryRow, name string, node *store.NodeRecord) bool {
 	if name == "" {
 		return true
 	}
@@ -1019,7 +1019,7 @@ func bindingMatchesNode(row queryRow, name string, node *nodeRecord) bool {
 	return binding.Node != nil && binding.Node.ID == node.ID
 }
 
-func propertyFromBinding(binding boundValue, property string) (Value, bool) {
+func propertyFromBinding(binding boundValue, property string) (any, bool) {
 	switch {
 	case binding.Node != nil:
 		value, ok := binding.Node.Properties[property]

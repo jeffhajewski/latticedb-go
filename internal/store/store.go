@@ -1,4 +1,4 @@
-package latticedb
+package store
 
 import (
 	"encoding/json"
@@ -12,26 +12,26 @@ import (
 
 const (
 	stateFileName = "state.json"
-	ftsTextKey    = "text"
+	FTSTextKey    = "text"
 )
 
-type graphState struct {
-	Nodes map[uint64]*nodeRecord
-	Edges map[uint64]*edgeRecord
+type GraphState struct {
+	Nodes map[uint64]*NodeRecord
+	Edges map[uint64]*EdgeRecord
 }
 
-type nodeRecord struct {
+type NodeRecord struct {
 	ID         uint64
 	Labels     []string
-	Properties map[string]Value
+	Properties map[string]any
 }
 
-type edgeRecord struct {
+type EdgeRecord struct {
 	ID         uint64
 	SourceID   uint64
 	TargetID   uint64
 	Type       string
-	Properties map[string]Value
+	Properties map[string]any
 }
 
 type persistedState struct {
@@ -67,18 +67,14 @@ type persistedValue struct {
 	Map    map[string]persistedValue `json:"map,omitempty"`
 }
 
-func newGraphState() *graphState {
-	return &graphState{
-		Nodes: map[uint64]*nodeRecord{},
-		Edges: map[uint64]*edgeRecord{},
+func NewGraphState() *GraphState {
+	return &GraphState{
+		Nodes: map[uint64]*NodeRecord{},
+		Edges: map[uint64]*EdgeRecord{},
 	}
 }
 
-func stateFilePath(dbPath string) string {
-	return filepath.Join(dbPath, stateFileName)
-}
-
-func loadGraphState(dbPath string) (*graphState, uint64, uint64, error) {
+func LoadGraphState(dbPath string) (*GraphState, uint64, uint64, error) {
 	data, err := os.ReadFile(stateFilePath(dbPath))
 	if err != nil {
 		return nil, 0, 0, err
@@ -89,13 +85,13 @@ func loadGraphState(dbPath string) (*graphState, uint64, uint64, error) {
 		return nil, 0, 0, fmt.Errorf("decode state: %w", err)
 	}
 
-	graph := newGraphState()
+	graph := NewGraphState()
 	for _, storedNode := range snapshot.Nodes {
 		props, err := decodePropertyMap(storedNode.Properties)
 		if err != nil {
 			return nil, 0, 0, fmt.Errorf("decode node %d properties: %w", storedNode.ID, err)
 		}
-		graph.Nodes[storedNode.ID] = &nodeRecord{
+		graph.Nodes[storedNode.ID] = &NodeRecord{
 			ID:         storedNode.ID,
 			Labels:     slices.Clone(storedNode.Labels),
 			Properties: props,
@@ -106,7 +102,7 @@ func loadGraphState(dbPath string) (*graphState, uint64, uint64, error) {
 		if err != nil {
 			return nil, 0, 0, fmt.Errorf("decode edge %d properties: %w", storedEdge.ID, err)
 		}
-		graph.Edges[storedEdge.ID] = &edgeRecord{
+		graph.Edges[storedEdge.ID] = &EdgeRecord{
 			ID:         storedEdge.ID,
 			SourceID:   storedEdge.SourceID,
 			TargetID:   storedEdge.TargetID,
@@ -126,7 +122,7 @@ func loadGraphState(dbPath string) (*graphState, uint64, uint64, error) {
 	return graph, nextNodeID, nextEdgeID, nil
 }
 
-func persistGraphState(dbPath string, graph *graphState, nextNodeID uint64, nextEdgeID uint64) error {
+func PersistGraphState(dbPath string, graph *GraphState, nextNodeID uint64, nextEdgeID uint64) error {
 	if err := os.MkdirAll(dbPath, 0o755); err != nil {
 		return fmt.Errorf("create db directory: %w", err)
 	}
@@ -138,7 +134,7 @@ func persistGraphState(dbPath string, graph *graphState, nextNodeID uint64, next
 		Edges:      make([]persistedEdge, 0, len(graph.Edges)),
 	}
 
-	for _, nodeID := range sortedNodeIDs(graph) {
+	for _, nodeID := range SortedNodeIDs(graph) {
 		node := graph.Nodes[nodeID]
 		props, err := encodePropertyMap(node.Properties)
 		if err != nil {
@@ -150,7 +146,7 @@ func persistGraphState(dbPath string, graph *graphState, nextNodeID uint64, next
 			Properties: props,
 		})
 	}
-	for _, edgeID := range sortedEdgeIDs(graph) {
+	for _, edgeID := range SortedEdgeIDs(graph) {
 		edge := graph.Edges[edgeID]
 		props, err := encodePropertyMap(edge.Properties)
 		if err != nil {
@@ -180,39 +176,39 @@ func persistGraphState(dbPath string, graph *graphState, nextNodeID uint64, next
 	return nil
 }
 
-func cloneGraphState(graph *graphState) *graphState {
-	cloned := newGraphState()
+func CloneGraphState(graph *GraphState) *GraphState {
+	cloned := NewGraphState()
 	for id, node := range graph.Nodes {
-		cloned.Nodes[id] = &nodeRecord{
+		cloned.Nodes[id] = &NodeRecord{
 			ID:         node.ID,
 			Labels:     slices.Clone(node.Labels),
-			Properties: clonePropertyMap(node.Properties),
+			Properties: ClonePropertyMap(node.Properties),
 		}
 	}
 	for id, edge := range graph.Edges {
-		cloned.Edges[id] = &edgeRecord{
+		cloned.Edges[id] = &EdgeRecord{
 			ID:         edge.ID,
 			SourceID:   edge.SourceID,
 			TargetID:   edge.TargetID,
 			Type:       edge.Type,
-			Properties: clonePropertyMap(edge.Properties),
+			Properties: ClonePropertyMap(edge.Properties),
 		}
 	}
 	return cloned
 }
 
-func clonePropertyMap(in map[string]Value) map[string]Value {
+func ClonePropertyMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
-		return map[string]Value{}
+		return map[string]any{}
 	}
-	out := make(map[string]Value, len(in))
+	out := make(map[string]any, len(in))
 	for key, value := range in {
-		out[key] = cloneValue(value)
+		out[key] = CloneValue(value)
 	}
 	return out
 }
 
-func cloneValue(value Value) Value {
+func CloneValue(value any) any {
 	switch v := value.(type) {
 	case nil:
 		return nil
@@ -220,31 +216,31 @@ func cloneValue(value Value) Value {
 		return append([]byte(nil), v...)
 	case []float32:
 		return append([]float32(nil), v...)
-	case []Value:
-		cloned := make([]Value, len(v))
+	case []any:
+		cloned := make([]any, len(v))
 		for i, item := range v {
-			cloned[i] = cloneValue(item)
+			cloned[i] = CloneValue(item)
 		}
 		return cloned
-	case map[string]Value:
-		return clonePropertyMap(v)
+	case map[string]any:
+		return ClonePropertyMap(v)
 	default:
 		rv := reflect.ValueOf(value)
 		switch rv.Kind() {
 		case reflect.Slice, reflect.Array:
-			list := make([]Value, rv.Len())
+			list := make([]any, rv.Len())
 			for i := 0; i < rv.Len(); i++ {
-				list[i] = cloneValue(rv.Index(i).Interface())
+				list[i] = CloneValue(rv.Index(i).Interface())
 			}
 			return list
 		case reflect.Map:
 			if rv.Type().Key().Kind() != reflect.String {
 				return value
 			}
-			out := make(map[string]Value, rv.Len())
+			out := make(map[string]any, rv.Len())
 			iter := rv.MapRange()
 			for iter.Next() {
-				out[iter.Key().String()] = cloneValue(iter.Value().Interface())
+				out[iter.Key().String()] = CloneValue(iter.Value().Interface())
 			}
 			return out
 		default:
@@ -253,7 +249,7 @@ func cloneValue(value Value) Value {
 	}
 }
 
-func normalizeValue(value Value) (Value, error) {
+func NormalizeValue(value any) (any, error) {
 	switch v := value.(type) {
 	case nil:
 		return nil, nil
@@ -292,20 +288,20 @@ func normalizeValue(value Value) (Value, error) {
 		return append([]byte(nil), v...), nil
 	case []float32:
 		return append([]float32(nil), v...), nil
-	case []Value:
-		list := make([]Value, len(v))
+	case []any:
+		list := make([]any, len(v))
 		for i, item := range v {
-			normalized, err := normalizeValue(item)
+			normalized, err := NormalizeValue(item)
 			if err != nil {
 				return nil, err
 			}
 			list[i] = normalized
 		}
 		return list, nil
-	case map[string]Value:
-		out := make(map[string]Value, len(v))
+	case map[string]any:
+		out := make(map[string]any, len(v))
 		for key, item := range v {
-			normalized, err := normalizeValue(item)
+			normalized, err := NormalizeValue(item)
 			if err != nil {
 				return nil, err
 			}
@@ -319,9 +315,9 @@ func normalizeValue(value Value) (Value, error) {
 	case reflect.Invalid:
 		return nil, nil
 	case reflect.Slice, reflect.Array:
-		list := make([]Value, rv.Len())
+		list := make([]any, rv.Len())
 		for i := 0; i < rv.Len(); i++ {
-			normalized, err := normalizeValue(rv.Index(i).Interface())
+			normalized, err := NormalizeValue(rv.Index(i).Interface())
 			if err != nil {
 				return nil, err
 			}
@@ -332,10 +328,10 @@ func normalizeValue(value Value) (Value, error) {
 		if rv.Type().Key().Kind() != reflect.String {
 			return nil, fmt.Errorf("map key type %s is not supported", rv.Type().Key())
 		}
-		out := make(map[string]Value, rv.Len())
+		out := make(map[string]any, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
-			normalized, err := normalizeValue(iter.Value().Interface())
+			normalized, err := NormalizeValue(iter.Value().Interface())
 			if err != nil {
 				return nil, err
 			}
@@ -347,7 +343,75 @@ func normalizeValue(value Value) (Value, error) {
 	}
 }
 
-func encodePropertyMap(in map[string]Value) (map[string]persistedValue, error) {
+func NormalizeProperties(in map[string]any) (map[string]any, error) {
+	if len(in) == 0 {
+		return map[string]any{}, nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		normalized, err := NormalizeValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("property %q: %w", key, err)
+		}
+		out[key] = normalized
+	}
+	return out, nil
+}
+
+func SortedNodeIDs(graph *GraphState) []uint64 {
+	ids := make([]uint64, 0, len(graph.Nodes))
+	for id := range graph.Nodes {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func SortedEdgeIDs(graph *GraphState) []uint64 {
+	ids := make([]uint64, 0, len(graph.Edges))
+	for id := range graph.Edges {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func LabelsMatch(node *NodeRecord, required []string) bool {
+	for _, label := range required {
+		if !slices.Contains(node.Labels, label) {
+			return false
+		}
+	}
+	return true
+}
+
+func PropertiesMatch(actual map[string]any, required map[string]any) bool {
+	for key, want := range required {
+		got, ok := actual[key]
+		if !ok {
+			return false
+		}
+		if !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidateCreateLabels(labels []string) error {
+	for _, label := range labels {
+		if label == "" {
+			return errors.New("labels must be non-empty")
+		}
+	}
+	return nil
+}
+
+func stateFilePath(dbPath string) string {
+	return filepath.Join(dbPath, stateFileName)
+}
+
+func encodePropertyMap(in map[string]any) (map[string]persistedValue, error) {
 	if len(in) == 0 {
 		return map[string]persistedValue{}, nil
 	}
@@ -362,11 +426,11 @@ func encodePropertyMap(in map[string]Value) (map[string]persistedValue, error) {
 	return out, nil
 }
 
-func decodePropertyMap(in map[string]persistedValue) (map[string]Value, error) {
+func decodePropertyMap(in map[string]persistedValue) (map[string]any, error) {
 	if len(in) == 0 {
-		return map[string]Value{}, nil
+		return map[string]any{}, nil
 	}
-	out := make(map[string]Value, len(in))
+	out := make(map[string]any, len(in))
 	for key, value := range in {
 		decoded, err := decodeValue(value)
 		if err != nil {
@@ -377,7 +441,7 @@ func decodePropertyMap(in map[string]persistedValue) (map[string]Value, error) {
 	return out, nil
 }
 
-func encodeValue(value Value) (persistedValue, error) {
+func encodeValue(value any) (persistedValue, error) {
 	switch v := value.(type) {
 	case nil:
 		return persistedValue{Kind: "null"}, nil
@@ -393,7 +457,7 @@ func encodeValue(value Value) (persistedValue, error) {
 		return persistedValue{Kind: "bytes", Bytes: append([]byte(nil), v...)}, nil
 	case []float32:
 		return persistedValue{Kind: "vector", Vector: append([]float32(nil), v...)}, nil
-	case []Value:
+	case []any:
 		list := make([]persistedValue, len(v))
 		for i, item := range v {
 			encoded, err := encodeValue(item)
@@ -403,14 +467,14 @@ func encodeValue(value Value) (persistedValue, error) {
 			list[i] = encoded
 		}
 		return persistedValue{Kind: "list", List: list}, nil
-	case map[string]Value:
+	case map[string]any:
 		mapped, err := encodePropertyMap(v)
 		if err != nil {
 			return persistedValue{}, err
 		}
 		return persistedValue{Kind: "map", Map: mapped}, nil
 	default:
-		normalized, err := normalizeValue(value)
+		normalized, err := NormalizeValue(value)
 		if err != nil {
 			return persistedValue{}, err
 		}
@@ -421,7 +485,7 @@ func encodeValue(value Value) (persistedValue, error) {
 	}
 }
 
-func decodeValue(value persistedValue) (Value, error) {
+func decodeValue(value persistedValue) (any, error) {
 	switch value.Kind {
 	case "null":
 		return nil, nil
@@ -438,7 +502,7 @@ func decodeValue(value persistedValue) (Value, error) {
 	case "vector":
 		return append([]float32(nil), value.Vector...), nil
 	case "list":
-		list := make([]Value, len(value.List))
+		list := make([]any, len(value.List))
 		for i, item := range value.List {
 			decoded, err := decodeValue(item)
 			if err != nil {
@@ -452,53 +516,4 @@ func decodeValue(value persistedValue) (Value, error) {
 	default:
 		return nil, fmt.Errorf("unknown stored value kind %q", value.Kind)
 	}
-}
-
-func sortedNodeIDs(graph *graphState) []uint64 {
-	ids := make([]uint64, 0, len(graph.Nodes))
-	for id := range graph.Nodes {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids
-}
-
-func sortedEdgeIDs(graph *graphState) []uint64 {
-	ids := make([]uint64, 0, len(graph.Edges))
-	for id := range graph.Edges {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids
-}
-
-func labelsMatch(node *nodeRecord, required []string) bool {
-	for _, label := range required {
-		if !slices.Contains(node.Labels, label) {
-			return false
-		}
-	}
-	return true
-}
-
-func propertiesMatch(actual map[string]Value, required map[string]Value) bool {
-	for key, want := range required {
-		got, ok := actual[key]
-		if !ok {
-			return false
-		}
-		if !reflect.DeepEqual(got, want) {
-			return false
-		}
-	}
-	return true
-}
-
-func validateCreateLabels(labels []string) error {
-	for _, label := range labels {
-		if label == "" {
-			return errors.New("labels must be non-empty")
-		}
-	}
-	return nil
 }
