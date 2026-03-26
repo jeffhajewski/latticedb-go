@@ -42,7 +42,7 @@ type exportedEdge struct {
 }
 
 func Export(dbPath string, format ExportFormat, outputPath string) ([]byte, error) {
-	graph, _, _, err := store.LoadGraphState(dbPath)
+	graph, _, _, _, err := store.LoadGraphState(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -62,15 +62,15 @@ func Export(dbPath string, format ExportFormat, outputPath string) ([]byte, erro
 }
 
 func Dump(dbPath string) ([]byte, error) {
-	graph, _, _, err := store.LoadGraphState(dbPath)
+	graph, _, _, _, err := store.LoadGraphState(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	return marshalExportGraph(graph)
 }
 
-func SimulateCrash(string) error {
-	return nil
+func SimulateCrash(dbPath string) error {
+	return store.SimulateCrash(dbPath)
 }
 
 func exportJSON(graph *store.GraphState, outputPath string) ([]byte, error) {

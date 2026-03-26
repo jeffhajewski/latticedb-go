@@ -1,10 +1,8 @@
 package store
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -12,6 +10,7 @@ import (
 
 const (
 	stateFileName = "state.json"
+	walFileName   = "wal.log"
 	FTSTextKey    = "text"
 )
 
@@ -35,6 +34,7 @@ type EdgeRecord struct {
 }
 
 type persistedState struct {
+	CommitID   uint64          `json:"commit_id"`
 	NextNodeID uint64          `json:"next_node_id"`
 	NextEdgeID uint64          `json:"next_edge_id"`
 	Nodes      []persistedNode `json:"nodes"`
@@ -72,108 +72,6 @@ func NewGraphState() *GraphState {
 		Nodes: map[uint64]*NodeRecord{},
 		Edges: map[uint64]*EdgeRecord{},
 	}
-}
-
-func LoadGraphState(dbPath string) (*GraphState, uint64, uint64, error) {
-	data, err := os.ReadFile(stateFilePath(dbPath))
-	if err != nil {
-		return nil, 0, 0, err
-	}
-
-	var snapshot persistedState
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return nil, 0, 0, fmt.Errorf("decode state: %w", err)
-	}
-
-	graph := NewGraphState()
-	for _, storedNode := range snapshot.Nodes {
-		props, err := decodePropertyMap(storedNode.Properties)
-		if err != nil {
-			return nil, 0, 0, fmt.Errorf("decode node %d properties: %w", storedNode.ID, err)
-		}
-		graph.Nodes[storedNode.ID] = &NodeRecord{
-			ID:         storedNode.ID,
-			Labels:     slices.Clone(storedNode.Labels),
-			Properties: props,
-		}
-	}
-	for _, storedEdge := range snapshot.Edges {
-		props, err := decodePropertyMap(storedEdge.Properties)
-		if err != nil {
-			return nil, 0, 0, fmt.Errorf("decode edge %d properties: %w", storedEdge.ID, err)
-		}
-		graph.Edges[storedEdge.ID] = &EdgeRecord{
-			ID:         storedEdge.ID,
-			SourceID:   storedEdge.SourceID,
-			TargetID:   storedEdge.TargetID,
-			Type:       storedEdge.Type,
-			Properties: props,
-		}
-	}
-
-	nextNodeID := snapshot.NextNodeID
-	if nextNodeID == 0 {
-		nextNodeID = 1
-	}
-	nextEdgeID := snapshot.NextEdgeID
-	if nextEdgeID == 0 {
-		nextEdgeID = 1
-	}
-	return graph, nextNodeID, nextEdgeID, nil
-}
-
-func PersistGraphState(dbPath string, graph *GraphState, nextNodeID uint64, nextEdgeID uint64) error {
-	if err := os.MkdirAll(dbPath, 0o755); err != nil {
-		return fmt.Errorf("create db directory: %w", err)
-	}
-
-	snapshot := persistedState{
-		NextNodeID: nextNodeID,
-		NextEdgeID: nextEdgeID,
-		Nodes:      make([]persistedNode, 0, len(graph.Nodes)),
-		Edges:      make([]persistedEdge, 0, len(graph.Edges)),
-	}
-
-	for _, nodeID := range SortedNodeIDs(graph) {
-		node := graph.Nodes[nodeID]
-		props, err := encodePropertyMap(node.Properties)
-		if err != nil {
-			return fmt.Errorf("encode node %d properties: %w", nodeID, err)
-		}
-		snapshot.Nodes = append(snapshot.Nodes, persistedNode{
-			ID:         node.ID,
-			Labels:     slices.Clone(node.Labels),
-			Properties: props,
-		})
-	}
-	for _, edgeID := range SortedEdgeIDs(graph) {
-		edge := graph.Edges[edgeID]
-		props, err := encodePropertyMap(edge.Properties)
-		if err != nil {
-			return fmt.Errorf("encode edge %d properties: %w", edgeID, err)
-		}
-		snapshot.Edges = append(snapshot.Edges, persistedEdge{
-			ID:         edge.ID,
-			SourceID:   edge.SourceID,
-			TargetID:   edge.TargetID,
-			Type:       edge.Type,
-			Properties: props,
-		})
-	}
-
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return fmt.Errorf("encode state: %w", err)
-	}
-
-	tempPath := filepath.Join(dbPath, ".state.tmp")
-	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
-		return fmt.Errorf("write temp state: %w", err)
-	}
-	if err := os.Rename(tempPath, stateFilePath(dbPath)); err != nil {
-		return fmt.Errorf("rename temp state: %w", err)
-	}
-	return nil
 }
 
 func CloneGraphState(graph *GraphState) *GraphState {
@@ -409,6 +307,10 @@ func ValidateCreateLabels(labels []string) error {
 
 func stateFilePath(dbPath string) string {
 	return filepath.Join(dbPath, stateFileName)
+}
+
+func walFilePath(dbPath string) string {
+	return filepath.Join(dbPath, walFileName)
 }
 
 func encodePropertyMap(in map[string]any) (map[string]persistedValue, error) {

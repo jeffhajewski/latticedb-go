@@ -83,6 +83,7 @@ type DB struct {
 	graph            *store.GraphState
 	nextNodeID       uint64
 	nextEdgeID       uint64
+	commitID         uint64
 	readOnly         bool
 	enableVector     bool
 	vectorDimensions uint16
@@ -100,7 +101,7 @@ type Tx struct {
 }
 
 func Open(path string, opts OpenOptions) (*DB, error) {
-	graph, nextNodeID, nextEdgeID, err := store.LoadGraphState(path)
+	graph, nextNodeID, nextEdgeID, commitID, err := store.LoadGraphState(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
@@ -111,7 +112,8 @@ func Open(path string, opts OpenOptions) (*DB, error) {
 		graph = store.NewGraphState()
 		nextNodeID = 1
 		nextEdgeID = 1
-		if err := store.PersistGraphState(path, graph, nextNodeID, nextEdgeID); err != nil {
+		commitID = 0
+		if err := store.CheckpointGraphState(path, graph, nextNodeID, nextEdgeID, commitID); err != nil {
 			return nil, err
 		}
 	}
@@ -121,6 +123,7 @@ func Open(path string, opts OpenOptions) (*DB, error) {
 		graph:            graph,
 		nextNodeID:       nextNodeID,
 		nextEdgeID:       nextEdgeID,
+		commitID:         commitID,
 		readOnly:         opts.ReadOnly,
 		enableVector:     opts.EnableVector,
 		vectorDimensions: opts.VectorDimensions,
@@ -134,11 +137,6 @@ func (db *DB) Close() error {
 
 	if db.closed {
 		return nil
-	}
-	if !db.readOnly {
-		if err := store.PersistGraphState(db.path, db.graph, db.nextNodeID, db.nextEdgeID); err != nil {
-			return err
-		}
 	}
 	db.closed = true
 	return nil
@@ -357,9 +355,14 @@ func (tx *Tx) Commit() error {
 	}
 
 	tx.db.graph = tx.graph
-	if err := store.PersistGraphState(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID); err != nil {
+	nextCommitID := tx.db.commitID + 1
+	if err := store.AppendWALCommit(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID); err != nil {
 		return err
 	}
+	if err := store.CheckpointGraphState(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID); err != nil {
+		return err
+	}
+	tx.db.commitID = nextCommitID
 	tx.closed = true
 	return nil
 }
