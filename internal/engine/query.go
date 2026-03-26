@@ -17,6 +17,7 @@ type queryPlan struct {
 	where         *whereClause
 	setClause     *setClause
 	createClause  *createClause
+	deleteClause  *deleteClause
 	returnClause  *returnClause
 	limit         int
 }
@@ -48,9 +49,10 @@ type whereClause struct {
 type whereKind string
 
 const (
-	whereEquals whereKind = "equals"
-	whereVector whereKind = "vector"
-	whereFTS    whereKind = "fts"
+	whereEquals    whereKind = "equals"
+	whereVector    whereKind = "vector"
+	whereFTS       whereKind = "fts"
+	whereBindingID whereKind = "binding_id"
 )
 
 type setClause struct {
@@ -64,6 +66,10 @@ type createClause struct {
 	TargetVar string
 	EdgeType  string
 	Props     map[string]valueExpr
+}
+
+type deleteClause struct {
+	Vars []string
 }
 
 type returnClause struct {
@@ -111,7 +117,7 @@ func parseQuery(query string) (*queryPlan, error) {
 	}
 
 	rest := strings.TrimSpace(strings.TrimPrefix(query, "MATCH "))
-	matchText, nextKeyword, tail := splitOnNextClause(rest, " WHERE ", " RETURN ", " SET ", " CREATE ")
+	matchText, nextKeyword, tail := splitOnNextClause(rest, " WHERE ", " RETURN ", " SET ", " CREATE ", " DELETE ")
 	patterns, err := parseMatchPatterns(matchText)
 	if err != nil {
 		return nil, err
@@ -121,7 +127,7 @@ func parseQuery(query string) (*queryPlan, error) {
 
 	switch nextKeyword {
 	case " WHERE ":
-		whereText, whereNext, afterWhere := splitOnNextClause(tail, " RETURN ", " SET ", " CREATE ")
+		whereText, whereNext, afterWhere := splitOnNextClause(tail, " RETURN ", " SET ", " CREATE ", " DELETE ")
 		whereClause, err := parseWhereClause(whereText)
 		if err != nil {
 			return nil, err
@@ -129,7 +135,7 @@ func parseQuery(query string) (*queryPlan, error) {
 		plan.where = whereClause
 		nextKeyword = whereNext
 		tail = afterWhere
-	case " RETURN ", " SET ", " CREATE ", "":
+	case " RETURN ", " SET ", " CREATE ", " DELETE ", "":
 	default:
 		return nil, fmt.Errorf("unsupported clause after MATCH: %q", nextKeyword)
 	}
@@ -161,6 +167,12 @@ func parseQuery(query string) (*queryPlan, error) {
 			return nil, err
 		}
 		plan.createClause = createClause
+	case " DELETE ":
+		deleteClause, err := parseDeleteClause(tail)
+		if err != nil {
+			return nil, err
+		}
+		plan.deleteClause = deleteClause
 	case "":
 	default:
 		return nil, fmt.Errorf("unsupported terminal clause %q", nextKeyword)
@@ -170,7 +182,7 @@ func parseQuery(query string) (*queryPlan, error) {
 }
 
 func (plan *queryPlan) mutates() bool {
-	return plan.setClause != nil || plan.createClause != nil
+	return plan.setClause != nil || plan.createClause != nil || plan.deleteClause != nil
 }
 
 func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, error) {
@@ -198,6 +210,11 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 	}
 	if plan.setClause != nil {
 		if err := plan.setClause.apply(rows, params); err != nil {
+			return QueryResult{}, err
+		}
+	}
+	if plan.deleteClause != nil {
+		if err := plan.deleteClause.apply(tx, rows); err != nil {
 			return QueryResult{}, err
 		}
 	}
@@ -331,6 +348,13 @@ func parseWhereClause(text string) (*whereClause, error) {
 		return &whereClause{Kind: whereFTS, Var: varName, Property: property, Expr: expr}, nil
 	}
 	if left, right, ok := splitOperator(text, " = "); ok {
+		if varName, ok := parseBindingIDAccess(left); ok {
+			expr, err := parseValueExpr(right)
+			if err != nil {
+				return nil, err
+			}
+			return &whereClause{Kind: whereBindingID, Var: varName, Expr: expr}, nil
+		}
 		varName, property, err := parsePropertyAccess(left)
 		if err != nil {
 			return nil, err
@@ -408,6 +432,22 @@ func parseCreateClause(text string) (*createClause, error) {
 		EdgeType:  strings.TrimSpace(edgeSegments[1]),
 		Props:     props,
 	}, nil
+}
+
+func parseDeleteClause(text string) (*deleteClause, error) {
+	parts := splitTopLevel(text, ',')
+	vars := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			return nil, fmt.Errorf("invalid DELETE clause %q", text)
+		}
+		vars = append(vars, name)
+	}
+	if len(vars) == 0 {
+		return nil, fmt.Errorf("invalid DELETE clause %q", text)
+	}
+	return &deleteClause{Vars: vars}, nil
 }
 
 func parseReturnClause(text string) (*returnClause, error) {
@@ -585,6 +625,19 @@ func (clause *whereClause) apply(rows []queryRow, params map[string]any) ([]quer
 			nextRow := row.clone()
 			nextRow.Order = -float64(score)
 			filtered = append(filtered, nextRow)
+		case whereBindingID:
+			expected, err := clause.Expr.eval(row, params)
+			if err != nil {
+				return nil, err
+			}
+			expectedID, ok := normalizeInt64(expected)
+			if !ok {
+				return nil, fmt.Errorf("id comparison requires integer, got %T", expected)
+			}
+			gotID, ok := bindingID(binding)
+			if ok && gotID == expectedID {
+				filtered = append(filtered, row)
+			}
 		default:
 			return nil, fmt.Errorf("unsupported WHERE kind %q", clause.Kind)
 		}
@@ -665,6 +718,38 @@ func (clause *createClause) apply(tx *Tx, rows []queryRow, params map[string]any
 		if _, err := tx.CreateEdge(sourceBinding.Node.ID, targetBinding.Node.ID, clause.EdgeType, CreateEdgeOptions{
 			Properties: props,
 		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (clause *deleteClause) apply(tx *Tx, rows []queryRow) error {
+	nodeIDs := map[uint64]struct{}{}
+	edgeIDs := map[uint64]struct{}{}
+
+	for _, row := range rows {
+		for _, name := range clause.Vars {
+			binding, ok := row.Bindings[name]
+			if !ok {
+				return fmt.Errorf("unknown binding %q", name)
+			}
+			switch {
+			case binding.Edge != nil:
+				edgeIDs[binding.Edge.ID] = struct{}{}
+			case binding.Node != nil:
+				nodeIDs[binding.Node.ID] = struct{}{}
+			default:
+				return fmt.Errorf("binding %q is neither node nor edge", name)
+			}
+		}
+	}
+
+	for edgeID := range edgeIDs {
+		delete(tx.graph.Edges, edgeID)
+	}
+	for nodeID := range nodeIDs {
+		if err := tx.DeleteNode(nodeID); err != nil {
 			return err
 		}
 	}
@@ -817,6 +902,18 @@ func parsePropertyAccess(text string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid property access %q", text)
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+func parseBindingIDAccess(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "id(") || !strings.HasSuffix(text, ")") {
+		return "", false
+	}
+	name := strings.TrimSpace(text[len("id(") : len(text)-1])
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 func splitOperator(text string, operator string) (string, string, bool) {
@@ -1070,4 +1167,26 @@ func lowestBindingID(bindings map[string]boundValue) uint64 {
 		}
 	}
 	return lowest
+}
+
+func bindingID(binding boundValue) (int64, bool) {
+	switch {
+	case binding.Node != nil:
+		return int64(binding.Node.ID), true
+	case binding.Edge != nil:
+		return int64(binding.Edge.ID), true
+	default:
+		return 0, false
+	}
+}
+
+func normalizeInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int:
+		return int64(v), true
+	default:
+		return 0, false
+	}
 }

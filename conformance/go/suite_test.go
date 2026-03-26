@@ -546,6 +546,30 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 	if err != nil {
 		t.Fatalf("validate query mutation semantics: %v", err)
 	}
+
+	if _, err := db.Query(
+		"MATCH (:Person {name: \"Alice\"})-[r:REL]->(:Person {name: \"Bob\"}) WHERE id(r) = $edgeID DELETE r",
+		map[string]Value{"edgeID": edge1ID},
+	); err != nil {
+		t.Fatalf("delete one parallel edge by stable id: %v", err)
+	}
+
+	err = db.View(func(tx Tx) error {
+		outgoing, err := tx.GetOutgoingEdges(aliceID)
+		if err != nil {
+			return err
+		}
+		if len(outgoing) != 1 {
+			t.Fatalf("expected exactly 1 outgoing edge after targeted delete, got %d", len(outgoing))
+		}
+		if outgoing[0].ID != edge2ID {
+			t.Fatalf("expected surviving edge id %d, got %d", edge2ID, outgoing[0].ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("validate targeted parallel edge delete: %v", err)
+	}
 }
 
 func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {

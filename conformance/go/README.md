@@ -21,7 +21,7 @@ The suite covers:
 - read-only rejection, own-write visibility, commit visibility to new transactions, and rollback cleanup
 - query mutation atomicity
 - query `SET ... = null` removal semantics
-- parallel-edge targeting via stable edge ID
+- parallel-edge targeting and single-edge deletion via stable edge ID
 - direct vector search and full-text search
 - vector and full-text query operators preserving additional `MATCH` bindings
 - query cache management behavior
