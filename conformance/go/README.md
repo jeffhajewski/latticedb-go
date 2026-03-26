@@ -20,7 +20,7 @@ The suite covers:
 - missing versus stored `NULL` semantics in direct property APIs
 - read-only rejection, own-write visibility, commit visibility to new transactions, and rollback cleanup
 - query mutation atomicity
-- query `SET ... = null` removal semantics
+- query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
 - parallel-edge targeting and single-edge deletion via stable edge ID
 - direct vector search and full-text search
 - vector and full-text query operators preserving additional `MATCH` bindings

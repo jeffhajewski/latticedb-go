@@ -448,7 +448,7 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 
 	err := db.Update(func(tx Tx) error {
 		alice, err := tx.CreateNode(CreateNodeOptions{
-			Labels:     []string{"Person"},
+			Labels:     []string{"Person", "Employee"},
 			Properties: map[string]Value{"name": "Alice", "temp": "remove"},
 		})
 		if err != nil {
@@ -522,11 +522,42 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		t.Fatalf("validate parallel edge targeting: %v", err)
 	}
 
+	if _, err := db.Query("MATCH (n:Person:Employee {name: \"Alice\"}) SET n = {name: \"Alice\", role: \"lead\"}", nil); err != nil {
+		t.Fatalf("query property-map replacement: %v", err)
+	}
+
+	if _, err := db.Query("MATCH (n:Person {name: \"Alice\"}) SET n += {team: \"graph\", role: \"staff\"}", nil); err != nil {
+		t.Fatalf("query property-map merge: %v", err)
+	}
+
+	if _, err := db.Query("MATCH (n:Person {name: \"Alice\"}) REMOVE n.team", nil); err != nil {
+		t.Fatalf("query property remove: %v", err)
+	}
+
+	if _, err := db.Query("MATCH (n:Person {name: \"Alice\"}) REMOVE n:Employee", nil); err != nil {
+		t.Fatalf("query label remove: %v", err)
+	}
+
+	if _, err := db.Query("MATCH (n:Person {name: \"Alice\"}) SET n.temp = \"remove\"", nil); err != nil {
+		t.Fatalf("query property set before null removal: %v", err)
+	}
+
 	if _, err := db.Query("MATCH (n:Person {name: \"Alice\"}) SET n.temp = null", nil); err != nil {
 		t.Fatalf("query null removal: %v", err)
 	}
 
 	err = db.View(func(tx Tx) error {
+		alice, err := tx.GetNode(aliceID)
+		if err != nil {
+			return err
+		}
+		if alice == nil {
+			t.Fatalf("expected alice after query mutations")
+		}
+		if !reflect.DeepEqual(alice.Labels, []string{"Person"}) {
+			t.Fatalf("unexpected labels after query mutations: %#v", alice.Labels)
+		}
+
 		_, ok, err := tx.GetProperty(aliceID, "temp")
 		if err != nil {
 			return err
@@ -534,6 +565,31 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		if ok {
 			t.Fatalf("expected query SET ... = null to remove property")
 		}
+
+		name, ok, err := tx.GetProperty(aliceID, "name")
+		if err != nil {
+			return err
+		}
+		if !ok || name != "Alice" {
+			t.Fatalf("unexpected name after query mutations: ok=%v value=%#v", ok, name)
+		}
+
+		role, ok, err := tx.GetProperty(aliceID, "role")
+		if err != nil {
+			return err
+		}
+		if !ok || role != "staff" {
+			t.Fatalf("unexpected role after query mutations: ok=%v value=%#v", ok, role)
+		}
+
+		_, ok, err = tx.GetProperty(aliceID, "team")
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Fatalf("expected REMOVE n.team to delete property")
+		}
+
 		outgoing, err := tx.GetOutgoingEdges(aliceID)
 		if err != nil {
 			return err

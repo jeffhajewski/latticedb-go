@@ -17,6 +17,7 @@ type queryPlan struct {
 	where         *whereClause
 	setClause     *setClause
 	createClause  *createClause
+	removeClause  *removeClause
 	deleteClause  *deleteClause
 	returnClause  *returnClause
 	limit         int
@@ -56,6 +57,7 @@ const (
 )
 
 type setClause struct {
+	Kind     setKind
 	Var      string
 	Property string
 	Expr     valueExpr
@@ -66,6 +68,24 @@ type createClause struct {
 	TargetVar string
 	EdgeType  string
 	Props     map[string]valueExpr
+}
+
+type setKind string
+
+const (
+	setProperty setKind = "property"
+	setReplace  setKind = "replace"
+	setMerge    setKind = "merge"
+)
+
+type removeClause struct {
+	Items []removeItem
+}
+
+type removeItem struct {
+	Var      string
+	Property string
+	Label    string
 }
 
 type deleteClause struct {
@@ -102,6 +122,10 @@ type literalExpr struct {
 	Value any
 }
 
+type mapLiteralExpr struct {
+	Entries map[string]valueExpr
+}
+
 type paramExpr struct {
 	Name string
 }
@@ -117,7 +141,7 @@ func parseQuery(query string) (*queryPlan, error) {
 	}
 
 	rest := strings.TrimSpace(strings.TrimPrefix(query, "MATCH "))
-	matchText, nextKeyword, tail := splitOnNextClause(rest, " WHERE ", " RETURN ", " SET ", " CREATE ", " DELETE ")
+	matchText, nextKeyword, tail := splitOnNextClause(rest, " WHERE ", " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ")
 	patterns, err := parseMatchPatterns(matchText)
 	if err != nil {
 		return nil, err
@@ -127,7 +151,7 @@ func parseQuery(query string) (*queryPlan, error) {
 
 	switch nextKeyword {
 	case " WHERE ":
-		whereText, whereNext, afterWhere := splitOnNextClause(tail, " RETURN ", " SET ", " CREATE ", " DELETE ")
+		whereText, whereNext, afterWhere := splitOnNextClause(tail, " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ")
 		whereClause, err := parseWhereClause(whereText)
 		if err != nil {
 			return nil, err
@@ -135,7 +159,7 @@ func parseQuery(query string) (*queryPlan, error) {
 		plan.where = whereClause
 		nextKeyword = whereNext
 		tail = afterWhere
-	case " RETURN ", " SET ", " CREATE ", " DELETE ", "":
+	case " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ", "":
 	default:
 		return nil, fmt.Errorf("unsupported clause after MATCH: %q", nextKeyword)
 	}
@@ -167,6 +191,12 @@ func parseQuery(query string) (*queryPlan, error) {
 			return nil, err
 		}
 		plan.createClause = createClause
+	case " REMOVE ":
+		removeClause, err := parseRemoveClause(tail)
+		if err != nil {
+			return nil, err
+		}
+		plan.removeClause = removeClause
 	case " DELETE ":
 		deleteClause, err := parseDeleteClause(tail)
 		if err != nil {
@@ -182,7 +212,7 @@ func parseQuery(query string) (*queryPlan, error) {
 }
 
 func (plan *queryPlan) mutates() bool {
-	return plan.setClause != nil || plan.createClause != nil || plan.deleteClause != nil
+	return plan.setClause != nil || plan.createClause != nil || plan.removeClause != nil || plan.deleteClause != nil
 }
 
 func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, error) {
@@ -210,6 +240,11 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 	}
 	if plan.setClause != nil {
 		if err := plan.setClause.apply(rows, params); err != nil {
+			return QueryResult{}, err
+		}
+	}
+	if plan.removeClause != nil {
+		if err := plan.removeClause.apply(rows); err != nil {
 			return QueryResult{}, err
 		}
 	}
@@ -369,19 +404,34 @@ func parseWhereClause(text string) (*whereClause, error) {
 }
 
 func parseSetClause(text string) (*setClause, error) {
+	if left, right, ok := splitOperator(text, " += "); ok {
+		name := strings.TrimSpace(left)
+		if name == "" || strings.Contains(name, ".") {
+			return nil, fmt.Errorf("invalid SET merge target %q", left)
+		}
+		expr, err := parseValueExpr(right)
+		if err != nil {
+			return nil, err
+		}
+		return &setClause{Kind: setMerge, Var: name, Expr: expr}, nil
+	}
+
 	left, right, ok := splitOperator(text, " = ")
 	if !ok {
 		return nil, fmt.Errorf("unsupported SET clause %q", text)
-	}
-	varName, property, err := parsePropertyAccess(left)
-	if err != nil {
-		return nil, err
 	}
 	expr, err := parseValueExpr(right)
 	if err != nil {
 		return nil, err
 	}
-	return &setClause{Var: varName, Property: property, Expr: expr}, nil
+	if varName, property, err := parsePropertyAccess(left); err == nil {
+		return &setClause{Kind: setProperty, Var: varName, Property: property, Expr: expr}, nil
+	}
+	name := strings.TrimSpace(left)
+	if name == "" {
+		return nil, fmt.Errorf("invalid SET target %q", left)
+	}
+	return &setClause{Kind: setReplace, Var: name, Expr: expr}, nil
 }
 
 func parseCreateClause(text string) (*createClause, error) {
@@ -448,6 +498,32 @@ func parseDeleteClause(text string) (*deleteClause, error) {
 		return nil, fmt.Errorf("invalid DELETE clause %q", text)
 	}
 	return &deleteClause{Vars: vars}, nil
+}
+
+func parseRemoveClause(text string) (*removeClause, error) {
+	parts := splitTopLevel(text, ',')
+	items := make([]removeItem, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("invalid REMOVE clause %q", text)
+		}
+		if varName, property, err := parsePropertyAccess(part); err == nil {
+			items = append(items, removeItem{Var: varName, Property: property})
+			continue
+		}
+		left, right, ok := splitOperator(part, ":")
+		if !ok {
+			return nil, fmt.Errorf("invalid REMOVE clause item %q", part)
+		}
+		varName := strings.TrimSpace(left)
+		label := strings.TrimSpace(right)
+		if varName == "" || label == "" {
+			return nil, fmt.Errorf("invalid REMOVE clause item %q", part)
+		}
+		items = append(items, removeItem{Var: varName, Label: label})
+	}
+	return &removeClause{Items: items}, nil
 }
 
 func parseReturnClause(text string) (*returnClause, error) {
@@ -671,21 +747,82 @@ func (clause *setClause) apply(rows []queryRow, params map[string]any) error {
 		if err != nil {
 			return err
 		}
-		switch {
-		case binding.Node != nil:
-			if normalized == nil {
-				delete(binding.Node.Properties, clause.Property)
-			} else {
-				binding.Node.Properties[clause.Property] = normalized
+		switch clause.Kind {
+		case setProperty:
+			switch {
+			case binding.Node != nil:
+				if normalized == nil {
+					delete(binding.Node.Properties, clause.Property)
+				} else {
+					binding.Node.Properties[clause.Property] = normalized
+				}
+			case binding.Edge != nil:
+				if normalized == nil {
+					delete(binding.Edge.Properties, clause.Property)
+				} else {
+					binding.Edge.Properties[clause.Property] = normalized
+				}
+			default:
+				return fmt.Errorf("binding %q is neither node nor edge", clause.Var)
 			}
-		case binding.Edge != nil:
-			if normalized == nil {
-				delete(binding.Edge.Properties, clause.Property)
-			} else {
-				binding.Edge.Properties[clause.Property] = normalized
+		case setReplace:
+			props, err := replacementPropertyMap(normalized)
+			if err != nil {
+				return err
+			}
+			switch {
+			case binding.Node != nil:
+				binding.Node.Properties = props
+			case binding.Edge != nil:
+				binding.Edge.Properties = props
+			default:
+				return fmt.Errorf("binding %q is neither node nor edge", clause.Var)
+			}
+		case setMerge:
+			props, err := mergePropertyMap(normalized)
+			if err != nil {
+				return err
+			}
+			switch {
+			case binding.Node != nil:
+				mergeMutationProperties(binding.Node.Properties, props)
+			case binding.Edge != nil:
+				mergeMutationProperties(binding.Edge.Properties, props)
+			default:
+				return fmt.Errorf("binding %q is neither node nor edge", clause.Var)
 			}
 		default:
-			return fmt.Errorf("binding %q is neither node nor edge", clause.Var)
+			return fmt.Errorf("unsupported SET kind %q", clause.Kind)
+		}
+	}
+	return nil
+}
+
+func (clause *removeClause) apply(rows []queryRow) error {
+	for _, row := range rows {
+		for _, item := range clause.Items {
+			binding, ok := row.Bindings[item.Var]
+			if !ok {
+				continue
+			}
+			switch {
+			case item.Property != "":
+				switch {
+				case binding.Node != nil:
+					delete(binding.Node.Properties, item.Property)
+				case binding.Edge != nil:
+					delete(binding.Edge.Properties, item.Property)
+				default:
+					return fmt.Errorf("binding %q is neither node nor edge", item.Var)
+				}
+			case item.Label != "":
+				if binding.Node == nil {
+					return fmt.Errorf("binding %q is not a node", item.Var)
+				}
+				binding.Node.Labels = removeLabel(binding.Node.Labels, item.Label)
+			default:
+				return fmt.Errorf("invalid REMOVE item for binding %q", item.Var)
+			}
 		}
 	}
 	return nil
@@ -795,6 +932,22 @@ func (expr literalExpr) eval(_ queryRow, _ map[string]any) (any, error) {
 	return store.CloneValue(expr.Value), nil
 }
 
+func (expr mapLiteralExpr) eval(row queryRow, params map[string]any) (any, error) {
+	out := make(map[string]any, len(expr.Entries))
+	for key, item := range expr.Entries {
+		value, err := item.eval(row, params)
+		if err != nil {
+			return nil, err
+		}
+		normalized, err := store.NormalizeValue(value)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = normalized
+	}
+	return out, nil
+}
+
 func (expr paramExpr) eval(_ queryRow, params map[string]any) (any, error) {
 	value, ok := params[expr.Name]
 	if !ok {
@@ -822,6 +975,12 @@ func parseValueExpr(text string) (valueExpr, error) {
 		return literalExpr{Value: false}, nil
 	case strings.HasPrefix(text, "$"):
 		return paramExpr{Name: strings.TrimPrefix(text, "$")}, nil
+	case strings.HasPrefix(text, "{") && strings.HasSuffix(text, "}"):
+		entries, err := parsePropertyExprMap(strings.TrimSpace(text[1 : len(text)-1]))
+		if err != nil {
+			return nil, err
+		}
+		return mapLiteralExpr{Entries: entries}, nil
 	case strings.HasPrefix(text, "\""):
 		unquoted, err := strconv.Unquote(text)
 		if err != nil {
@@ -1189,4 +1348,50 @@ func normalizeInt64(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func replacementPropertyMap(value any) (map[string]any, error) {
+	props, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("property-map mutation requires map value, got %T", value)
+	}
+	out := make(map[string]any, len(props))
+	for key, item := range props {
+		if item == nil {
+			continue
+		}
+		out[key] = item
+	}
+	return out, nil
+}
+
+func mergePropertyMap(value any) (map[string]any, error) {
+	props, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("property-map mutation requires map value, got %T", value)
+	}
+	return props, nil
+}
+
+func mergeMutationProperties(dst map[string]any, src map[string]any) {
+	for key, value := range src {
+		if value == nil {
+			delete(dst, key)
+			continue
+		}
+		dst[key] = value
+	}
+}
+
+func removeLabel(labels []string, target string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label != target {
+			out = append(out, label)
+		}
+	}
+	return out
 }
