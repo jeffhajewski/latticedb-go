@@ -550,10 +550,17 @@ func parseReturnClause(text string) (*returnClause, error) {
 		if closeIdx < 0 {
 			return nil, fmt.Errorf("invalid count return %q", text)
 		}
+		derivedAlias := strings.TrimSpace(text[:closeIdx+1])
 		countVar := strings.TrimSpace(text[len("count("):closeIdx])
 		rest := strings.TrimSpace(text[closeIdx+1:])
-		if !strings.HasPrefix(rest, "AS ") {
-			return nil, fmt.Errorf("count return must use AS alias: %q", text)
+		switch {
+		case rest == "":
+			return &returnClause{
+				CountVar:   countVar,
+				CountAlias: derivedAlias,
+			}, nil
+		case !strings.HasPrefix(rest, "AS "):
+			return nil, fmt.Errorf("invalid count return %q", text)
 		}
 		return &returnClause{
 			CountVar:   countVar,
@@ -564,18 +571,21 @@ func parseReturnClause(text string) (*returnClause, error) {
 	parts := splitTopLevel(text, ',')
 	projections := make([]projection, 0, len(parts))
 	for _, part := range parts {
-		pieces := strings.SplitN(strings.TrimSpace(part), " AS ", 2)
-		if len(pieces) != 2 {
-			return nil, fmt.Errorf("projection %q is missing AS alias", part)
+		exprText := strings.TrimSpace(part)
+		alias := exprText
+		pieces := strings.SplitN(exprText, " AS ", 2)
+		if len(pieces) == 2 {
+			exprText = strings.TrimSpace(pieces[0])
+			alias = strings.TrimSpace(pieces[1])
 		}
-		varName, property, err := parsePropertyAccess(strings.TrimSpace(pieces[0]))
+		varName, property, err := parsePropertyAccess(exprText)
 		if err != nil {
 			return nil, err
 		}
 		projections = append(projections, projection{
 			Var:      varName,
 			Property: property,
-			Alias:    strings.TrimSpace(pieces[1]),
+			Alias:    alias,
 		})
 	}
 	return &returnClause{Projections: projections}, nil

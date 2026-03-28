@@ -376,6 +376,18 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 		t.Fatalf("query present property with IS NOT NULL: %v", err)
 	}
 	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query("MATCH (n:Profile) RETURN n.name", nil)
+	if err != nil {
+		t.Fatalf("query implicit property alias: %v", err)
+	}
+	requireSingleStringResult(t, result, "n.name", "Alice")
+
+	result, err = db.Query("MATCH (n:Profile) RETURN count(n)", nil)
+	if err != nil {
+		t.Fatalf("query implicit count alias: %v", err)
+	}
+	requireSingleIntResult(t, result, "count(n)", 1)
 }
 
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {
