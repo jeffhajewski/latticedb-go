@@ -305,8 +305,9 @@ Current export behavior establishes several logical invariants worth preserving 
 - multi-label nodes are exported once, not once per label
 - parallel edges are preserved as distinct edges
 - edge properties remain attached to the correct edge instance
-
-This does not yet define a canonical cross-engine dump format. That is a separate follow-up.
+- the public `dump` command emits canonical JSON for cross-engine state comparison
+- canonical dump ordering is stable for nodes, edges, labels, property keys, and nested map keys
+- canonical dump includes stable edge IDs so parallel edges remain distinguishable in state comparisons
 
 ## Deliberately Unspecified Areas
 
@@ -346,7 +347,9 @@ The current extracted suite already covers black-box cases drawn from these sour
   - dump/export logical-state invariants through the public CLI
 - `tests/crash/crash_test.zig`
   - committed graph-state recovery through WAL replay
+  - multi-label and secondary-label lookup recovery through WAL replay
   - committed node-property update recovery through WAL replay
+  - committed edge-property update recovery through WAL replay
   - aborted tail inserts remaining invisible after replay
   - post-recovery edge-ID monotonicity relative to committed state
 - binding integration tests
@@ -368,7 +371,6 @@ That adapter-specific knowledge is intentional; it lets the suite stay engine-ne
 
 ## Immediate Follow-Ups
 
-1. Write a canonical graph dump format for cross-engine state comparison instead of format-specific export invariants alone.
-2. Expand recovery coverage once the current public path can truthfully support secondary-label replay and edge-property replay as extracted guarantees.
-3. Write a cleaner engine-neutral crash-injection interface if `latticedb-go` needs a different recovery trigger than the current file-reset harness.
-4. Tighten any still-ambiguous areas discovered during the first `latticedb-go` prototypes.
+1. Widen the canonical dump conformance coverage as new value shapes or exported fields are added.
+2. Write a cleaner engine-neutral crash-injection interface if `latticedb-go` needs a different recovery trigger than the current file-reset harness.
+3. Tighten any still-ambiguous areas discovered during the first `latticedb-go` prototypes.

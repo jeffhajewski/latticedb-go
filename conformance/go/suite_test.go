@@ -679,6 +679,7 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	}
 
 	var nearDocID uint64
+	var miscGraphDocID uint64
 	var farDocID uint64
 	err = db.Update(func(tx Tx) error {
 		categoryDB, err := tx.CreateNode(CreateNodeOptions{
@@ -711,6 +712,21 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 		}
 		nearDocID = docNear.ID
 
+		docMiscGraph, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Document"},
+			Properties: map[string]Value{"name": "Doc Misc Graph"},
+		})
+		if err != nil {
+			return err
+		}
+		if err := tx.SetVector(docMiscGraph.ID, "embedding", []float32{1.0, 0.1, 0.0, 0.0}); err != nil {
+			return err
+		}
+		if err := tx.FTSIndex(docMiscGraph.ID, "graph notes and references"); err != nil {
+			return err
+		}
+		miscGraphDocID = docMiscGraph.ID
+
 		docFar, err := tx.CreateNode(CreateNodeOptions{
 			Labels:     []string{"Document"},
 			Properties: map[string]Value{"name": "Doc Far"},
@@ -729,6 +745,9 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 		if _, err := tx.CreateEdge(docNear.ID, categoryDB.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
 			return err
 		}
+		if _, err := tx.CreateEdge(docMiscGraph.ID, categoryMisc.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
+			return err
+		}
 		if _, err := tx.CreateEdge(docFar.ID, categoryMisc.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
 			return err
 		}
@@ -738,18 +757,21 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 		t.Fatalf("seed search graph: %v", err)
 	}
 
-	vectorResults, err := db.VectorSearch([]float32{1.0, 0.0, 0.0, 0.0}, VectorSearchOptions{K: 2})
+	vectorResults, err := db.VectorSearch([]float32{1.0, 0.0, 0.0, 0.0}, VectorSearchOptions{K: 3})
 	if err != nil {
 		t.Fatalf("direct vector search: %v", err)
 	}
-	if len(vectorResults) < 2 {
-		t.Fatalf("expected at least 2 vector results, got %d", len(vectorResults))
+	if len(vectorResults) < 3 {
+		t.Fatalf("expected at least 3 vector results, got %d", len(vectorResults))
 	}
 	if vectorResults[0].NodeID != nearDocID {
 		t.Fatalf("expected nearest vector result %d first, got %d", nearDocID, vectorResults[0].NodeID)
 	}
-	if vectorResults[1].NodeID != farDocID {
-		t.Fatalf("expected farther vector result %d second, got %d", farDocID, vectorResults[1].NodeID)
+	if vectorResults[1].NodeID != miscGraphDocID {
+		t.Fatalf("expected filtered misc graph result %d second, got %d", miscGraphDocID, vectorResults[1].NodeID)
+	}
+	if vectorResults[2].NodeID != farDocID {
+		t.Fatalf("expected farther vector result %d third, got %d", farDocID, vectorResults[2].NodeID)
 	}
 
 	vectorQuery, err := db.Query(
@@ -761,6 +783,16 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	}
 	requireSingleStringResult(t, vectorQuery, "category", "Databases")
 	requireSingleStringResult(t, vectorQuery, "document", "Doc Candidate")
+
+	filteredVectorQuery, err := db.Query(
+		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.embedding <=> $query AND c.name = \"Misc\" RETURN c.name AS category, d.name AS document LIMIT 1",
+		map[string]Value{"query": []float32{1.0, 0.0, 0.0, 0.0}},
+	)
+	if err != nil {
+		t.Fatalf("filtered vector query: %v", err)
+	}
+	requireSingleStringResult(t, filteredVectorQuery, "category", "Misc")
+	requireSingleStringResult(t, filteredVectorQuery, "document", "Doc Misc Graph")
 
 	ftsResults, err := db.FTSSearch("graph databases", FTSSearchOptions{Limit: 5})
 	if err != nil {
@@ -774,7 +806,7 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	}
 
 	ftsQuery, err := db.Query(
-		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" RETURN c.name AS category, d.name AS document",
+		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" RETURN c.name AS category, d.name AS document LIMIT 1",
 		nil,
 	)
 	if err != nil {
@@ -782,6 +814,16 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	}
 	requireSingleStringResult(t, ftsQuery, "category", "Databases")
 	requireSingleStringResult(t, ftsQuery, "document", "Doc Candidate")
+
+	filteredFTSQuery, err := db.Query(
+		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" AND c.name = \"Misc\" RETURN c.name AS category, d.name AS document",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("filtered fts query: %v", err)
+	}
+	requireSingleStringResult(t, filteredFTSQuery, "category", "Misc")
+	requireSingleStringResult(t, filteredFTSQuery, "document", "Doc Misc Graph")
 
 	statsAfterFirst, err := db.CacheStats()
 	if err != nil {
