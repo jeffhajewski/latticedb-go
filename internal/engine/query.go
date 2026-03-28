@@ -14,7 +14,7 @@ import (
 
 type queryPlan struct {
 	matchPatterns []matchPattern
-	where         *whereClause
+	whereClauses  []*whereClause
 	setClause     *setClause
 	createClause  *createClause
 	removeClause  *removeClause
@@ -101,10 +101,18 @@ type returnClause struct {
 }
 
 type projection struct {
+	Kind     projectionKind
 	Var      string
 	Property string
 	Alias    string
 }
+
+type projectionKind string
+
+const (
+	projectionProperty  projectionKind = "property"
+	projectionBindingID projectionKind = "binding_id"
+)
 
 type queryRow struct {
 	Bindings map[string]boundValue
@@ -154,11 +162,11 @@ func parseQuery(query string) (*queryPlan, error) {
 	switch nextKeyword {
 	case " WHERE ":
 		whereText, whereNext, afterWhere := splitOnNextClause(tail, " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ")
-		whereClause, err := parseWhereClause(whereText)
+		whereClauses, err := parseWhereClauses(whereText)
 		if err != nil {
 			return nil, err
 		}
-		plan.where = whereClause
+		plan.whereClauses = whereClauses
 		nextKeyword = whereNext
 		tail = afterWhere
 	case " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ", "":
@@ -227,11 +235,13 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 		}
 	}
 
-	if plan.where != nil {
-		var err error
-		rows, err = plan.where.apply(rows, params)
-		if err != nil {
-			return QueryResult{}, err
+	if len(plan.whereClauses) > 0 {
+		for _, clause := range plan.whereClauses {
+			var err error
+			rows, err = clause.apply(rows, params)
+			if err != nil {
+				return QueryResult{}, err
+			}
 		}
 	}
 
@@ -359,6 +369,22 @@ func parseEdgePattern(text string) (edgePattern, error) {
 		pattern.EdgeVar = strings.TrimSpace(edgeSegments[0])
 	}
 	return pattern, nil
+}
+
+func parseWhereClauses(text string) ([]*whereClause, error) {
+	parts := splitTopLevelKeyword(text, " AND ")
+	clauses := make([]*whereClause, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return nil, fmt.Errorf("unsupported WHERE clause %q", text)
+		}
+		clause, err := parseWhereClause(part)
+		if err != nil {
+			return nil, err
+		}
+		clauses = append(clauses, clause)
+	}
+	return clauses, nil
 }
 
 func parseWhereClause(text string) (*whereClause, error) {
@@ -578,11 +604,20 @@ func parseReturnClause(text string) (*returnClause, error) {
 			exprText = strings.TrimSpace(pieces[0])
 			alias = strings.TrimSpace(pieces[1])
 		}
+		if varName, ok := parseBindingIDAccess(exprText); ok {
+			projections = append(projections, projection{
+				Kind:  projectionBindingID,
+				Var:   varName,
+				Alias: alias,
+			})
+			continue
+		}
 		varName, property, err := parsePropertyAccess(exprText)
 		if err != nil {
 			return nil, err
 		}
 		projections = append(projections, projection{
+			Kind:     projectionProperty,
 			Var:      varName,
 			Property: property,
 			Alias:    alias,
@@ -946,17 +981,34 @@ func (clause *returnClause) render(rows []queryRow) (QueryResult, error) {
 	for _, row := range rows {
 		resultRow := make(map[string]any, len(clause.Projections))
 		for _, projection := range clause.Projections {
-			binding, ok := row.Bindings[projection.Var]
-			if !ok {
-				resultRow[projection.Alias] = nil
-				continue
+			switch projection.Kind {
+			case projectionBindingID:
+				binding, ok := row.Bindings[projection.Var]
+				if !ok {
+					resultRow[projection.Alias] = nil
+					continue
+				}
+				value, ok := bindingID(binding)
+				if !ok {
+					resultRow[projection.Alias] = nil
+					continue
+				}
+				resultRow[projection.Alias] = value
+			case projectionProperty:
+				binding, ok := row.Bindings[projection.Var]
+				if !ok {
+					resultRow[projection.Alias] = nil
+					continue
+				}
+				value, exists := propertyFromBinding(binding, projection.Property)
+				if !exists {
+					resultRow[projection.Alias] = nil
+					continue
+				}
+				resultRow[projection.Alias] = store.CloneValue(value)
+			default:
+				return QueryResult{}, fmt.Errorf("unsupported projection kind %q", projection.Kind)
 			}
-			value, exists := propertyFromBinding(binding, projection.Property)
-			if !exists {
-				resultRow[projection.Alias] = nil
-				continue
-			}
-			resultRow[projection.Alias] = store.CloneValue(value)
 		}
 		result.Rows = append(result.Rows, resultRow)
 	}
@@ -1227,6 +1279,60 @@ func splitTopLevel(text string, separator rune) []string {
 			start = i + 1
 		}
 	}
+	parts = append(parts, strings.TrimSpace(text[start:]))
+	return parts
+}
+
+func splitTopLevelKeyword(text string, keyword string) []string {
+	parts := make([]string, 0)
+	start := 0
+	inString := false
+	braceDepth := 0
+	bracketDepth := 0
+	parenDepth := 0
+
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '"':
+			if i == 0 || text[i-1] != '\\' {
+				inString = !inString
+			}
+		case '{':
+			if !inString {
+				braceDepth++
+			}
+		case '}':
+			if !inString && braceDepth > 0 {
+				braceDepth--
+			}
+		case '[':
+			if !inString {
+				bracketDepth++
+			}
+		case ']':
+			if !inString && bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '(':
+			if !inString {
+				parenDepth++
+			}
+		case ')':
+			if !inString && parenDepth > 0 {
+				parenDepth--
+			}
+		}
+
+		if inString || braceDepth != 0 || bracketDepth != 0 || parenDepth != 0 {
+			continue
+		}
+		if strings.HasPrefix(text[i:], keyword) {
+			parts = append(parts, strings.TrimSpace(text[start:i]))
+			start = i + len(keyword)
+			i += len(keyword) - 1
+		}
+	}
+
 	parts = append(parts, strings.TrimSpace(text[start:]))
 	return parts
 }

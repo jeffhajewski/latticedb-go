@@ -91,7 +91,7 @@ func exportJSONL(graph *store.GraphState, outputPath string) ([]byte, error) {
 		line, err := json.Marshal(map[string]any{
 			"kind":       "node",
 			"id":         strconv.FormatUint(node.ID, 10),
-			"labels":     slices.Clone(node.Labels),
+			"labels":     sortedLabels(node.Labels),
 			"properties": exportPropertyMap(node.Properties),
 		})
 		if err != nil {
@@ -174,7 +174,7 @@ func marshalExportGraph(graph *store.GraphState) ([]byte, error) {
 		node := graph.Nodes[nodeID]
 		exported.Nodes = append(exported.Nodes, exportedNode{
 			ID:         strconv.FormatUint(node.ID, 10),
-			Labels:     slices.Clone(node.Labels),
+			Labels:     sortedLabels(node.Labels),
 			Properties: exportPropertyMap(node.Properties),
 		})
 	}
@@ -199,6 +199,15 @@ func exportPropertyMap(in map[string]any) map[string]any {
 	for key, value := range in {
 		out[key] = exportValue(value)
 	}
+	return out
+}
+
+func sortedLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := slices.Clone(labels)
+	slices.Sort(out)
 	return out
 }
 
