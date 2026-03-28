@@ -358,6 +358,24 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate nested values: %v", err)
 	}
+
+	result, err := db.Query("MATCH (n:Profile) WHERE n.note IS NULL RETURN count(n) AS count", nil)
+	if err != nil {
+		t.Fatalf("query stored null with IS NULL: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query("MATCH (n:Profile) WHERE n.missing IS NULL RETURN count(n) AS count", nil)
+	if err != nil {
+		t.Fatalf("query missing property with IS NULL: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query("MATCH (n:Profile) WHERE n.name IS NOT NULL RETURN count(n) AS count", nil)
+	if err != nil {
+		t.Fatalf("query present property with IS NOT NULL: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
 }
 
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {

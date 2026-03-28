@@ -51,6 +51,8 @@ type whereKind string
 
 const (
 	whereEquals    whereKind = "equals"
+	whereIsNull    whereKind = "is_null"
+	whereIsNotNull whereKind = "is_not_null"
 	whereVector    whereKind = "vector"
 	whereFTS       whereKind = "fts"
 	whereBindingID whereKind = "binding_id"
@@ -360,6 +362,21 @@ func parseEdgePattern(text string) (edgePattern, error) {
 }
 
 func parseWhereClause(text string) (*whereClause, error) {
+	text = strings.TrimSpace(text)
+	if strings.HasSuffix(text, " IS NOT NULL") {
+		varName, property, err := parsePropertyAccess(strings.TrimSuffix(text, " IS NOT NULL"))
+		if err != nil {
+			return nil, err
+		}
+		return &whereClause{Kind: whereIsNotNull, Var: varName, Property: property}, nil
+	}
+	if strings.HasSuffix(text, " IS NULL") {
+		varName, property, err := parsePropertyAccess(strings.TrimSuffix(text, " IS NULL"))
+		if err != nil {
+			return nil, err
+		}
+		return &whereClause{Kind: whereIsNull, Var: varName, Property: property}, nil
+	}
 	if left, right, ok := splitOperator(text, " <=> "); ok {
 		varName, property, err := parsePropertyAccess(left)
 		if err != nil {
@@ -653,6 +670,14 @@ func (clause *whereClause) apply(rows []queryRow, params map[string]any) ([]quer
 				return nil, err
 			}
 			if exists && reflect.DeepEqual(value, expected) {
+				filtered = append(filtered, row)
+			}
+		case whereIsNull:
+			if !exists || value == nil {
+				filtered = append(filtered, row)
+			}
+		case whereIsNotNull:
+			if exists && value != nil {
 				filtered = append(filtered, row)
 			}
 		case whereVector:

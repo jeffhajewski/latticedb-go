@@ -18,6 +18,7 @@ The suite covers:
 - stable monotonic edge identity across rollback and reopen
 - nested value round-trips
 - missing versus stored `NULL` semantics in direct property APIs
+- `IS NULL` / `IS NOT NULL` semantics over query property access results
 - read-only rejection, own-write visibility, commit visibility to new transactions, and rollback cleanup
 - query mutation atomicity
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
