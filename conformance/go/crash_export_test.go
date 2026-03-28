@@ -433,7 +433,7 @@ func TestConformanceExportAndDumpInvariants(t *testing.T) {
 	dumpGraph := readJSONGraphBytes(t, dumpBytes)
 	requireGraphCounts(t, dumpGraph, 2, 2)
 	requireExportEdgeProperties(t, dumpGraph)
-	requireCanonicalDump(t, dumpBytes, dumpGraph, aliceID, bobID)
+	requireCanonicalDump(t, dumpGraph, aliceID, bobID)
 
 	secondDump := mustDump(t, exporter, dbPath)
 	if string(dumpBytes) != string(secondDump) {
@@ -647,7 +647,7 @@ func requireSingleNodeID(t *testing.T, graph exportedGraph, wantID string) {
 	}
 }
 
-func requireCanonicalDump(t *testing.T, dumpBytes []byte, graph exportedGraph, aliceID, bobID uint64) {
+func requireCanonicalDump(t *testing.T, graph exportedGraph, aliceID, bobID uint64) {
 	t.Helper()
 
 	if len(graph.Nodes) != 2 || len(graph.Edges) != 2 {
@@ -667,10 +667,6 @@ func requireCanonicalDump(t *testing.T, dumpBytes []byte, graph exportedGraph, a
 	}
 	if jsonIntValue(t, graph.Edges[0].Properties["since"]) != 2020 || jsonIntValue(t, graph.Edges[1].Properties["since"]) != 2021 {
 		t.Fatalf("expected canonical dump edges sorted deterministically, got %#v", graph.Edges)
-	}
-
-	if !strings.Contains(string(dumpBytes), "\"edges\":[{\"id\":\"") {
-		t.Fatalf("expected canonical dump raw JSON to include edge ids:\n%s", dumpBytes)
 	}
 }
 

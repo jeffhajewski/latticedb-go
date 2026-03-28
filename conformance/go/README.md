@@ -27,7 +27,7 @@ The suite covers:
 - direct vector search and full-text search
 - vector and full-text query operators preserving additional `MATCH` bindings and honoring `AND` filters
 - query cache management behavior
-- crash recovery of committed graph state and committed node-property updates
+- crash recovery of committed graph state, secondary labels, and committed node/edge-property updates
 - export and dump invariants
 
 ## Running
