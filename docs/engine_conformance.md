@@ -1,6 +1,6 @@
 # Engine Conformance Spec
 
-This document defines the engine-level contract that a future `latticedb-go` implementation should match.
+This document defines the engine-level contract that `latticedb-go` should match.
 
 The goal is not to freeze Zig internals. The goal is to freeze the observable database behavior above the storage engine and below the language bindings.
 
@@ -8,7 +8,7 @@ This document sits alongside the local value-model spec in [value_model.md](valu
 
 ## Purpose
 
-The current Zig engine is the reference implementation. A future Go engine should be considered conformant if an application using the public database semantics cannot distinguish between the two engines except in areas this document explicitly leaves unspecified.
+The current Zig engine is the reference implementation. `latticedb-go` should be considered conformant if an application using the public database semantics cannot distinguish between the two engines except in areas this document explicitly leaves unspecified.
 
 This spec is intentionally written in terms of:
 
@@ -35,7 +35,7 @@ In scope:
 - transaction visibility and durability semantics
 - query result semantics
 - vector and full-text search behavior at the API/query level
-- import/export invariants that affect logical graph state
+- export/dump invariants that affect logical graph state
 - query cache functional behavior
 
 Out of scope:
@@ -52,7 +52,7 @@ This document is the intended contract.
 
 The conformance suite in [`conformance/go`](../conformance/go/README.md) is the executable example of this contract. If the implementation and this document disagree, the disagreement should be resolved explicitly rather than silently allowing drift.
 
-The extracted conformance suite now lives in [`conformance/go`](../conformance/go/README.md) and runs against local adapters for driver, export, and recovery behavior.
+The suite currently runs against local adapters for driver, export, and recovery behavior.
 
 ## Compatibility Boundaries
 
@@ -63,7 +63,7 @@ The project has four different compatibility surfaces. They should be treated se
 3. Query-language semantics
 4. On-disk format
 
-A future `latticedb-go` engine should target semantic compatibility first. It does not automatically inherit obligations around the current C ABI or file format unless those are chosen explicitly in a later phase.
+`latticedb-go` should target semantic compatibility first. It does not automatically inherit obligations around the current C ABI or file format unless those are chosen explicitly in a later phase.
 
 ## Core Data Model
 
@@ -148,18 +148,19 @@ This distinction is part of the public contract and should not be normalized awa
 
 ### Visibility
 
-The current public contract locks in these transaction-visibility guarantees:
+The current public transaction contract locks in these guarantees:
 
 - a transaction sees its own uncommitted writes
 - after a write transaction commits, a newly started transaction sees the committed state
 - rolled-back changes are not visible after rollback
 
-The current black-box suite does not yet freeze:
+The current public contract does not freeze:
 
 - cross-transaction visibility before commit
-- the behavior of a long-lived read transaction across concurrent commits
+- the behavior of a long-lived transaction across concurrent commits
+- concurrent writer conflict resolution, including whether contending writers fail, block, or resolve by last-commit-wins
 
-The Zig internals use MVCC, but stronger snapshot guarantees should not be treated as part of the public engine contract until they are covered by extracted black-box tests.
+The internal transaction manager in the reference engine uses snapshot-oriented MVCC machinery, but that should not be treated as the required public engine contract yet because the end-to-end database APIs are not fully wired to expose those stronger guarantees consistently. Implementations may provide stronger isolation than the guarantees listed above, but callers must not depend on that stronger behavior for cross-engine portability.
 
 ### Atomicity
 
@@ -212,7 +213,8 @@ This document does not attempt to restate the full Cypher subset grammar. It fre
 - Query parameters accept the same logical value model as direct property APIs.
 - Query results return the same logical value model, including nested values.
 - Explicit `RETURN ... AS alias` controls the output column name.
-- Without an explicit alias, the current derived-name behavior remains the reference until a stricter result-column spec is written.
+- Portable code should use explicit aliases for result column names.
+- Without an explicit alias, the current derived-name behavior is not a required cross-engine compatibility guarantee.
 - Unknown relationship types in `MATCH` produce an empty result, not an error.
 
 ### Property Access
@@ -247,6 +249,7 @@ This matters more than exact internal planning strategy.
 ### Vector Search
 
 - Vector search is nearest-neighbor search over stored vectors.
+- Result arrays are ordered by distance ascending.
 - Lower distance is better.
 - When one stored vector is an exact match for the query vector and another is not, the exact match should rank ahead.
 - Exact floating-point distances are not part of the cross-engine contract.
@@ -255,6 +258,7 @@ This matters more than exact internal planning strategy.
 ### Full-Text Search
 
 - Full-text search returns scored matches for indexed text.
+- Result arrays are ordered by score descending.
 - Higher score is better.
 - Exact score values are not part of the cross-engine contract.
 - Tie order is not currently specified.
@@ -268,12 +272,13 @@ Required behavior:
 
 - clearing the cache on an empty database succeeds
 - fresh cache statistics report zero entries, hits, and misses
-- executing a query text for the first time may increase misses
-- executing the same query text again may increase hits
+- executing a previously uncached query text increases misses by at least one
+- executing the same query text again without clearing or reopening increases hits by at least one
 - clearing the cache resets the entry count to zero
 
 Not required:
 
+- resetting cumulative hit/miss counters on clear
 - durability across reopen
 - exact cache eviction strategy
 - exact cache size or internal keying details beyond current public behavior
@@ -306,18 +311,31 @@ Current export behavior establishes several logical invariants worth preserving 
 - parallel edges are preserved as distinct edges
 - edge properties remain attached to the correct edge instance
 - the public `dump` command emits canonical JSON for cross-engine state comparison
-- canonical dump ordering is stable for nodes, edges, labels, property keys, and nested map keys
+- canonical dump includes unlabeled nodes
+- canonical dump orders nodes by node ID ascending
+- canonical dump orders edges by source ID, target ID, type name, then edge ID
+- canonical dump sorts labels, property keys, and nested map keys lexicographically
 - canonical dump includes stable edge IDs so parallel edges remain distinguishable in state comparisons
+- repeated dumps of unchanged logical state are byte-stable
+
+### Import Compatibility Boundary
+
+No JSON import format is currently part of the required engine contract.
+
+- The current compatibility target is the direct property/query APIs plus canonical dump/export behavior.
+- A future import format may be added, but it should be specified explicitly rather than inferred from the current reference-engine CLI importer.
 
 ## Deliberately Unspecified Areas
 
 The following are intentionally left open for now:
 
 - on-disk format compatibility
+- concurrent writer conflict resolution
 - exact map iteration order
 - exact vector distance values
 - exact BM25/FTS score values
 - exact tie-breaking when scores or distances are equal
+- non-aliased result column naming
 - exact human-readable error wording
 - exact planner/operator tree shape
 
@@ -336,6 +354,11 @@ The current extracted suite already covers black-box cases drawn from these sour
   - internal MVCC visibility rules
   - own-write visibility
   - deleted-version invisibility
+- `conformance/go/suite_test.go`
+  - read-only rejection
+  - own-write visibility
+  - newly started transactions observe committed state
+  - rollback cleanup
 - `tests/integration/query_mutation_test.zig`
   - mutation atomicity
   - edge-specific mutation semantics
@@ -364,13 +387,13 @@ The extracted suite keeps its assertions black-box:
 
 Some adapters are still engine-specific:
 
-- the current export adapter shells out to the public `lattice` CLI
-- the current recovery adapter simulates crash/reset using the current engine's file layout to force WAL replay
+- the current export adapter calls the local public export/dump surface
+- the current recovery adapter simulates crash/reset using the current engine's file layout to force recovery
 
 That adapter-specific knowledge is intentional; it lets the suite stay engine-neutral at the behavioral level while still exercising crash/export behavior on the current engine.
 
 ## Immediate Follow-Ups
 
 1. Widen the canonical dump conformance coverage as new value shapes or exported fields are added.
-2. Write a cleaner engine-neutral crash-injection interface if `latticedb-go` needs a different recovery trigger than the current file-reset harness.
-3. Tighten any still-ambiguous areas discovered during the first `latticedb-go` prototypes.
+2. Write a cleaner engine-neutral crash-injection interface if a future storage layout needs a different recovery trigger than the current file-reset harness.
+3. Decide and extract black-box coverage for concurrent writer conflict semantics if cross-engine portability needs them.
