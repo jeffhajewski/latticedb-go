@@ -28,6 +28,8 @@ The suite covers:
 - crash recovery of committed graph state, secondary labels, and committed node/edge-property updates
 - canonical dump/export invariants
 
+The suite intentionally does not freeze overlapping live writer behavior. Portable callers should serialize write transactions that may touch the same logical record, and future engines are free to provide stronger conflict detection or isolation than the current reference engine exposes publicly.
+
 ## Running
 
 ```bash

@@ -158,9 +158,13 @@ The current public contract does not freeze:
 
 - cross-transaction visibility before commit
 - the behavior of a long-lived transaction across concurrent commits
-- concurrent writer conflict resolution, including whether contending writers fail, block, or resolve by last-commit-wins
+- concurrent writer conflict resolution, including whether contending writers fail, block, expose uncommitted changes to each other, or resolve by mutation order or commit order
 
-The internal transaction manager in the reference engine uses snapshot-oriented MVCC machinery, but that should not be treated as the required public engine contract yet because the end-to-end database APIs are not fully wired to expose those stronger guarantees consistently. Implementations may provide stronger isolation than the guarantees listed above, but callers must not depend on that stronger behavior for cross-engine portability.
+Portable applications must not rely on overlapping write transactions touching the same logical record. If two live write transactions can both mutate the same node, edge, or property, the caller should serialize them with a higher-level lock or restrict itself to one active writer at a time per database.
+
+> Current reference note (non-normative): the Zig engine's current public database surface allows one live writer to observe another live writer's uncommitted mutation, and same-property conflicts currently resolve by mutation order rather than commit order. That behavior is an implementation detail, not the required cross-engine contract.
+
+The internal transaction manager uses snapshot-oriented MVCC machinery, but that should not be treated as the required public engine contract yet because the end-to-end database APIs are not fully wired to expose those stronger guarantees consistently. Implementations may provide stronger isolation than the guarantees listed above, but callers must not depend on that stronger behavior for cross-engine portability.
 
 ### Atomicity
 
@@ -330,7 +334,7 @@ No JSON import format is currently part of the required engine contract.
 The following are intentionally left open for now:
 
 - on-disk format compatibility
-- concurrent writer conflict resolution
+- concurrent writer conflict resolution for overlapping live write transactions, including pre-commit visibility and whether conflicts resolve by abort, blocking, mutation order, or commit order
 - exact map iteration order
 - exact vector distance values
 - exact BM25/FTS score values
@@ -359,6 +363,7 @@ The current extracted suite already covers black-box cases drawn from these sour
   - own-write visibility
   - newly started transactions observe committed state
   - rollback cleanup
+  - overlapping live writer behavior intentionally left out of the portable contract
 - `tests/integration/query_mutation_test.zig`
   - mutation atomicity
   - edge-specific mutation semantics
