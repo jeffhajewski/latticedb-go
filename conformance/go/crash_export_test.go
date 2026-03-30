@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -441,6 +442,103 @@ func TestConformanceExportAndDumpInvariants(t *testing.T) {
 	}
 }
 
+func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
+	exporter := currentExporter(t)
+
+	dbPath := filepath.Join(t.TempDir(), "canonical_dump.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+
+	var alphaID uint64
+	var betaID uint64
+	var unlabeledID uint64
+	var edgeBetaToAlpha uint64
+	var edgeAlphaToBetaZeta uint64
+	var edgeAlphaToBetaAlpha1 uint64
+	var edgeAlphaToBetaAlpha2 uint64
+
+	err := db.Update(func(tx Tx) error {
+		alpha, err := tx.CreateNode(CreateNodeOptions{
+			Labels: []string{"Person", "Employee"},
+			Properties: map[string]Value{
+				"zeta": "last",
+				"nested": map[string]Value{
+					"beta":  int64(2),
+					"alpha": int64(1),
+				},
+				"alpha": "first",
+				"name":  "Alpha",
+			},
+		})
+		if err != nil {
+			return err
+		}
+		beta, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person"},
+			Properties: map[string]Value{"name": "Beta"},
+		})
+		if err != nil {
+			return err
+		}
+		unlabeled, err := tx.CreateNode(CreateNodeOptions{
+			Properties: map[string]Value{"name": "NoLabel"},
+		})
+		if err != nil {
+			return err
+		}
+
+		edge1, err := tx.CreateEdge(beta.ID, alpha.ID, "BETA", CreateEdgeOptions{})
+		if err != nil {
+			return err
+		}
+		edge2, err := tx.CreateEdge(alpha.ID, beta.ID, "ZETA", CreateEdgeOptions{})
+		if err != nil {
+			return err
+		}
+		edge3, err := tx.CreateEdge(alpha.ID, beta.ID, "ALPHA", CreateEdgeOptions{})
+		if err != nil {
+			return err
+		}
+		edge4, err := tx.CreateEdge(alpha.ID, beta.ID, "ALPHA", CreateEdgeOptions{})
+		if err != nil {
+			return err
+		}
+
+		alphaID = alpha.ID
+		betaID = beta.ID
+		unlabeledID = unlabeled.ID
+		edgeBetaToAlpha = edge1.ID
+		edgeAlphaToBetaZeta = edge2.ID
+		edgeAlphaToBetaAlpha1 = edge3.ID
+		edgeAlphaToBetaAlpha2 = edge4.ID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed canonical dump graph: %v", err)
+	}
+	closeDB(t, db)
+
+	dumpBytes := mustDump(t, exporter, dbPath)
+	dumpGraph := readJSONGraphBytes(t, dumpBytes)
+	requireGraphCounts(t, dumpGraph, 3, 4)
+	requireSingleNodeID(t, dumpGraph, fmt.Sprintf("%d", alphaID))
+	requireSingleNodeID(t, dumpGraph, fmt.Sprintf("%d", betaID))
+	requireSingleNodeID(t, dumpGraph, fmt.Sprintf("%d", unlabeledID))
+	requireCanonicalNodeOrder(t, dumpGraph, []uint64{alphaID, betaID, unlabeledID})
+	requireUnlabeledNodePresent(t, dumpGraph, unlabeledID)
+	requireCanonicalEdgeOrder(t, dumpGraph, []uint64{
+		edgeAlphaToBetaAlpha1,
+		edgeAlphaToBetaAlpha2,
+		edgeAlphaToBetaZeta,
+		edgeBetaToAlpha,
+	})
+	requireRawPropertyKeyOrder(t, dumpBytes, alphaID, []string{"alpha", "name", "nested", "zeta"}, "nested", []string{"alpha", "beta"})
+
+	secondDump := mustDump(t, exporter, dbPath)
+	if string(dumpBytes) != string(secondDump) {
+		t.Fatalf("expected canonical dump output to be byte-stable across repeated runs")
+	}
+}
+
 type exportedGraph struct {
 	Nodes []exportedNode `json:"nodes"`
 	Edges []exportedEdge `json:"edges"`
@@ -645,6 +743,131 @@ func requireSingleNodeID(t *testing.T, graph exportedGraph, wantID string) {
 	if count != 1 {
 		t.Fatalf("expected node id %s exactly once in export, got %d matches", wantID, count)
 	}
+}
+
+func requireCanonicalNodeOrder(t *testing.T, graph exportedGraph, wantIDs []uint64) {
+	t.Helper()
+	if len(graph.Nodes) != len(wantIDs) {
+		t.Fatalf("expected %d canonical dump nodes, got %d", len(wantIDs), len(graph.Nodes))
+	}
+	for i, wantID := range wantIDs {
+		if graph.Nodes[i].ID != fmt.Sprintf("%d", wantID) {
+			t.Fatalf("expected node %d at canonical position %d, got %#v", wantID, i, graph.Nodes)
+		}
+	}
+}
+
+func requireUnlabeledNodePresent(t *testing.T, graph exportedGraph, nodeID uint64) {
+	t.Helper()
+	wantID := fmt.Sprintf("%d", nodeID)
+	for _, node := range graph.Nodes {
+		if node.ID == wantID {
+			if len(node.Labels) != 0 {
+				t.Fatalf("expected unlabeled node %s to round-trip without labels, got %#v", wantID, node.Labels)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing unlabeled node %s in canonical dump", wantID)
+}
+
+func requireCanonicalEdgeOrder(t *testing.T, graph exportedGraph, wantIDs []uint64) {
+	t.Helper()
+	if len(graph.Edges) != len(wantIDs) {
+		t.Fatalf("expected %d canonical dump edges, got %d", len(wantIDs), len(graph.Edges))
+	}
+	for i, wantID := range wantIDs {
+		if graph.Edges[i].ID != fmt.Sprintf("%d", wantID) {
+			t.Fatalf("expected edge %d at canonical position %d, got %#v", wantID, i, graph.Edges)
+		}
+	}
+}
+
+func requireRawPropertyKeyOrder(t *testing.T, dumpBytes []byte, nodeID uint64, wantKeys []string, nestedKey string, wantNestedKeys []string) {
+	t.Helper()
+
+	type rawExportedGraph struct {
+		Nodes []json.RawMessage `json:"nodes"`
+	}
+	type rawExportedNode struct {
+		ID         string          `json:"id"`
+		Properties json.RawMessage `json:"properties"`
+	}
+
+	var graph rawExportedGraph
+	if err := json.Unmarshal(dumpBytes, &graph); err != nil {
+		t.Fatalf("unmarshal raw dump graph: %v", err)
+	}
+
+	wantID := fmt.Sprintf("%d", nodeID)
+	for _, rawNode := range graph.Nodes {
+		var node rawExportedNode
+		if err := json.Unmarshal(rawNode, &node); err != nil {
+			t.Fatalf("unmarshal raw dump node: %v", err)
+		}
+		if node.ID != wantID {
+			continue
+		}
+
+		keys, values := orderedJSONObject(t, node.Properties)
+		if !reflect.DeepEqual(keys, wantKeys) {
+			t.Fatalf("unexpected canonical property key order for node %s: got %#v want %#v", wantID, keys, wantKeys)
+		}
+
+		nestedRaw, ok := values[nestedKey]
+		if !ok {
+			t.Fatalf("missing nested canonical property %q on node %s", nestedKey, wantID)
+		}
+		nestedKeys, _ := orderedJSONObject(t, nestedRaw)
+		if !reflect.DeepEqual(nestedKeys, wantNestedKeys) {
+			t.Fatalf("unexpected canonical nested key order for node %s property %q: got %#v want %#v", wantID, nestedKey, nestedKeys, wantNestedKeys)
+		}
+		return
+	}
+
+	t.Fatalf("missing node %s in raw canonical dump", wantID)
+}
+
+func orderedJSONObject(t *testing.T, raw json.RawMessage) ([]string, map[string]json.RawMessage) {
+	t.Helper()
+
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil {
+		t.Fatalf("read json object start: %v", err)
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		t.Fatalf("expected json object, got %#v", token)
+	}
+
+	keys := []string{}
+	values := map[string]json.RawMessage{}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			t.Fatalf("read json object key: %v", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			t.Fatalf("expected string json key, got %#v", keyToken)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatalf("decode raw json object value for key %q: %v", key, err)
+		}
+		keys = append(keys, key)
+		values[key] = value
+	}
+	endToken, err := decoder.Token()
+	if err != nil {
+		t.Fatalf("read json object end: %v", err)
+	}
+	endDelim, ok := endToken.(json.Delim)
+	if !ok || endDelim != '}' {
+		t.Fatalf("expected json object end, got %#v", endToken)
+	}
+	return keys, values
 }
 
 func requireCanonicalDump(t *testing.T, graph exportedGraph, aliceID, bobID uint64) {

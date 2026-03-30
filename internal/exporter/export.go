@@ -178,7 +178,7 @@ func marshalExportGraph(graph *store.GraphState) ([]byte, error) {
 			Properties: exportPropertyMap(node.Properties),
 		})
 	}
-	for _, edgeID := range store.SortedEdgeIDs(graph) {
+	for _, edgeID := range sortedCanonicalEdgeIDs(graph) {
 		edge := graph.Edges[edgeID]
 		exported.Edges = append(exported.Edges, exportedEdge{
 			ID:         strconv.FormatUint(edge.ID, 10),
@@ -189,6 +189,36 @@ func marshalExportGraph(graph *store.GraphState) ([]byte, error) {
 		})
 	}
 	return json.Marshal(exported)
+}
+
+func sortedCanonicalEdgeIDs(graph *store.GraphState) []uint64 {
+	edgeIDs := store.SortedEdgeIDs(graph)
+	slices.SortFunc(edgeIDs, func(leftID uint64, rightID uint64) int {
+		left := graph.Edges[leftID]
+		right := graph.Edges[rightID]
+
+		switch {
+		case left.SourceID < right.SourceID:
+			return -1
+		case left.SourceID > right.SourceID:
+			return 1
+		case left.TargetID < right.TargetID:
+			return -1
+		case left.TargetID > right.TargetID:
+			return 1
+		case left.Type < right.Type:
+			return -1
+		case left.Type > right.Type:
+			return 1
+		case left.ID < right.ID:
+			return -1
+		case left.ID > right.ID:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return edgeIDs
 }
 
 func exportPropertyMap(in map[string]any) map[string]any {

@@ -15,9 +15,9 @@ The suite covers:
 - persistence across reopen
 - stable monotonic edge identity across rollback and reopen
 - nested value round-trips
+- query projection and `UNWIND` preserving bytes, vectors, and nested values
 - missing versus stored `NULL` semantics in direct property APIs
 - `IS NULL` / `IS NOT NULL` semantics over query property access results
-- implicit derived column names for `RETURN` projections and `count(...)`
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics

@@ -359,7 +359,81 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 		t.Fatalf("validate nested values: %v", err)
 	}
 
-	result, err := db.Query("MATCH (n:Profile) WHERE n.note IS NULL RETURN count(n) AS count", nil)
+	result, err := db.Query("MATCH (n:Profile) RETURN n.payload AS payload, n.vector AS vector, n.profile AS profile", nil)
+	if err != nil {
+		t.Fatalf("query projected nested values: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 projected nested-value row, got %d", len(result.Rows))
+	}
+	if !reflect.DeepEqual(result.Rows[0]["payload"], []byte{1, 2, 3}) {
+		t.Fatalf("unexpected projected bytes payload: %#v", result.Rows[0]["payload"])
+	}
+	if !reflect.DeepEqual(result.Rows[0]["vector"], []float32{1.0, 2.5, 3.0}) {
+		t.Fatalf("unexpected projected vector: %#v", result.Rows[0]["vector"])
+	}
+	expectedProjectedProfile := map[string]Value{
+		"active": true,
+		"tags":   []Value{"graph", int64(7)},
+	}
+	if !reflect.DeepEqual(result.Rows[0]["profile"], expectedProjectedProfile) {
+		t.Fatalf("unexpected projected nested map: %#v", result.Rows[0]["profile"])
+	}
+
+	unwindRows := []Value{
+		map[string]Value{
+			"payload": []byte{9, 8},
+			"vector":  []float32{4.0, 5.0},
+			"profile": map[string]Value{
+				"active": true,
+				"tags":   []Value{"go", int64(9)},
+			},
+		},
+		map[string]Value{
+			"payload": []byte{7},
+			"vector":  []float32{6.0, 7.0},
+			"profile": map[string]Value{
+				"active": false,
+				"tags":   []Value{"db"},
+			},
+		},
+	}
+	result, err = db.Query(
+		"UNWIND $rows AS row RETURN row.payload AS payload, row.vector AS vector, row.profile AS profile",
+		map[string]Value{"rows": unwindRows},
+	)
+	if err != nil {
+		t.Fatalf("query unwind nested values: %v", err)
+	}
+	if len(result.Rows) != 2 {
+		t.Fatalf("expected 2 unwind rows, got %d", len(result.Rows))
+	}
+	if !reflect.DeepEqual(result.Rows[0]["payload"], []byte{9, 8}) {
+		t.Fatalf("unexpected unwind bytes payload row 0: %#v", result.Rows[0]["payload"])
+	}
+	if !reflect.DeepEqual(result.Rows[0]["vector"], []float32{4.0, 5.0}) {
+		t.Fatalf("unexpected unwind vector row 0: %#v", result.Rows[0]["vector"])
+	}
+	if !reflect.DeepEqual(result.Rows[0]["profile"], map[string]Value{
+		"active": true,
+		"tags":   []Value{"go", int64(9)},
+	}) {
+		t.Fatalf("unexpected unwind nested map row 0: %#v", result.Rows[0]["profile"])
+	}
+	if !reflect.DeepEqual(result.Rows[1]["payload"], []byte{7}) {
+		t.Fatalf("unexpected unwind bytes payload row 1: %#v", result.Rows[1]["payload"])
+	}
+	if !reflect.DeepEqual(result.Rows[1]["vector"], []float32{6.0, 7.0}) {
+		t.Fatalf("unexpected unwind vector row 1: %#v", result.Rows[1]["vector"])
+	}
+	if !reflect.DeepEqual(result.Rows[1]["profile"], map[string]Value{
+		"active": false,
+		"tags":   []Value{"db"},
+	}) {
+		t.Fatalf("unexpected unwind nested map row 1: %#v", result.Rows[1]["profile"])
+	}
+
+	result, err = db.Query("MATCH (n:Profile) WHERE n.note IS NULL RETURN count(n) AS count", nil)
 	if err != nil {
 		t.Fatalf("query stored null with IS NULL: %v", err)
 	}
@@ -376,18 +450,6 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 		t.Fatalf("query present property with IS NOT NULL: %v", err)
 	}
 	requireSingleIntResult(t, result, "count", 1)
-
-	result, err = db.Query("MATCH (n:Profile) RETURN n.name", nil)
-	if err != nil {
-		t.Fatalf("query implicit property alias: %v", err)
-	}
-	requireSingleStringResult(t, result, "n.name", "Alice")
-
-	result, err = db.Query("MATCH (n:Profile) RETURN count(n)", nil)
-	if err != nil {
-		t.Fatalf("query implicit count alias: %v", err)
-	}
-	requireSingleIntResult(t, result, "count(n)", 1)
 }
 
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 )
 
 type queryPlan struct {
+	unwindClause  *unwindClause
 	matchPatterns []matchPattern
 	whereClauses  []*whereClause
 	setClause     *setClause
@@ -94,6 +95,11 @@ type deleteClause struct {
 	Vars []string
 }
 
+type unwindClause struct {
+	Expr valueExpr
+	Var  string
+}
+
 type returnClause struct {
 	CountVar    string
 	CountAlias  string
@@ -120,8 +126,10 @@ type queryRow struct {
 }
 
 type boundValue struct {
-	Node *store.NodeRecord
-	Edge *store.EdgeRecord
+	Node     *store.NodeRecord
+	Edge     *store.EdgeRecord
+	Value    any
+	HasValue bool
 }
 
 type valueExpr interface {
@@ -146,10 +154,17 @@ type variableExpr struct {
 
 func parseQuery(query string) (*queryPlan, error) {
 	query = strings.TrimSpace(query)
-	if !strings.HasPrefix(query, "MATCH ") {
+	switch {
+	case strings.HasPrefix(query, "MATCH "):
+		return parseMatchQuery(query)
+	case strings.HasPrefix(query, "UNWIND "):
+		return parseUnwindQuery(query)
+	default:
 		return nil, fmt.Errorf("unsupported query %q", query)
 	}
+}
 
+func parseMatchQuery(query string) (*queryPlan, error) {
 	rest := strings.TrimSpace(strings.TrimPrefix(query, "MATCH "))
 	matchText, nextKeyword, tail := splitOnNextClause(rest, " WHERE ", " RETURN ", " SET ", " CREATE ", " REMOVE ", " DELETE ")
 	patterns, err := parseMatchPatterns(matchText)
@@ -221,12 +236,62 @@ func parseQuery(query string) (*queryPlan, error) {
 	return plan, nil
 }
 
+func parseUnwindQuery(query string) (*queryPlan, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(query, "UNWIND "))
+	exprText, keyword, tail := splitOnNextClause(rest, " AS ")
+	if keyword == "" {
+		return nil, fmt.Errorf("invalid UNWIND clause %q", query)
+	}
+	expr, err := parseValueExpr(exprText)
+	if err != nil {
+		return nil, err
+	}
+
+	varName, nextKeyword, afterVar := splitOnNextClause(tail, " RETURN ")
+	varName = strings.TrimSpace(varName)
+	if varName == "" {
+		return nil, fmt.Errorf("invalid UNWIND binding %q", query)
+	}
+	if nextKeyword != " RETURN " {
+		return nil, fmt.Errorf("unsupported terminal clause %q", nextKeyword)
+	}
+
+	returnText, limitText, hasLimit := splitLimitClause(afterVar)
+	returnClause, err := parseReturnClause(returnText)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := &queryPlan{
+		unwindClause: &unwindClause{
+			Expr: expr,
+			Var:  varName,
+		},
+		returnClause: returnClause,
+	}
+	if hasLimit {
+		limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+		if err != nil {
+			return nil, fmt.Errorf("invalid LIMIT %q", limitText)
+		}
+		plan.limit = limit
+	}
+	return plan, nil
+}
+
 func (plan *queryPlan) mutates() bool {
 	return plan.setClause != nil || plan.createClause != nil || plan.removeClause != nil || plan.deleteClause != nil
 }
 
 func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, error) {
 	rows := []queryRow{{Bindings: map[string]boundValue{}}}
+	if plan.unwindClause != nil {
+		var err error
+		rows, err = plan.unwindClause.apply(rows, params)
+		if err != nil {
+			return QueryResult{}, err
+		}
+	}
 	for _, pattern := range plan.matchPatterns {
 		var err error
 		rows, err = pattern.apply(tx, rows)
@@ -273,6 +338,29 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 		rows = rows[:plan.limit]
 	}
 	return plan.returnClause.render(rows)
+}
+
+func (clause *unwindClause) apply(rows []queryRow, params map[string]any) ([]queryRow, error) {
+	nextRows := make([]queryRow, 0)
+	for _, row := range rows {
+		value, err := clause.Expr.eval(row, params)
+		if err != nil {
+			return nil, err
+		}
+		list, ok := value.([]any)
+		if !ok {
+			return nil, fmt.Errorf("UNWIND requires list value, got %T", value)
+		}
+		for _, item := range list {
+			nextRow := row.clone()
+			nextRow.Bindings[clause.Var] = boundValue{
+				Value:    store.CloneValue(item),
+				HasValue: true,
+			}
+			nextRows = append(nextRows, nextRow)
+		}
+	}
+	return nextRows, nil
 }
 
 func parseMatchPatterns(text string) ([]matchPattern, error) {
@@ -1048,6 +1136,9 @@ func (expr variableExpr) eval(row queryRow, _ map[string]any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown binding %q", expr.Name)
 	}
+	if value.HasValue {
+		return store.CloneValue(value.Value), nil
+	}
 	return value, nil
 }
 
@@ -1424,6 +1515,13 @@ func propertyFromBinding(binding boundValue, property string) (any, bool) {
 	case binding.Edge != nil:
 		value, ok := binding.Edge.Properties[property]
 		return value, ok
+	case binding.HasValue:
+		value, ok := binding.Value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		prop, ok := value[property]
+		return prop, ok
 	default:
 		return nil, false
 	}
