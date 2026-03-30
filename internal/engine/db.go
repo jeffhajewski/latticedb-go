@@ -264,7 +264,7 @@ func (db *DB) FTSSearch(query string, opts FTSSearchOptions) ([]FTSSearchResult,
 			if !ok {
 				continue
 			}
-			score := search.FTSScore(text, terms)
+			score := search.FTSScoreWithOptions(text, terms, opts.MaxDistance, opts.MinTermLength)
 			if score <= 0 {
 				continue
 			}

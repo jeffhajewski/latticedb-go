@@ -51,6 +51,10 @@ func Tokenize(text string) []string {
 }
 
 func FTSScore(text string, terms []string) float32 {
+	return FTSScoreWithOptions(text, terms, 0, 0)
+}
+
+func FTSScoreWithOptions(text string, terms []string, maxDistance uint32, minTermLength uint32) float32 {
 	if len(terms) == 0 {
 		return 0
 	}
@@ -64,7 +68,61 @@ func FTSScore(text string, terms []string) float32 {
 	}
 	score := float32(0)
 	for _, term := range terms {
-		score += float32(freq[strings.ToLower(term)])
+		normalized := strings.ToLower(term)
+		best := freq[normalized]
+		if maxDistance > 0 && uint32(len([]rune(normalized))) >= minTermLength {
+			for token, count := range freq {
+				if token == normalized {
+					continue
+				}
+				if levenshteinDistance(normalized, token) <= int(maxDistance) && count > best {
+					best = count
+				}
+			}
+		}
+		score += float32(best)
 	}
 	return score
+}
+
+func levenshteinDistance(left string, right string) int {
+	leftRunes := []rune(left)
+	rightRunes := []rune(right)
+	if len(leftRunes) == 0 {
+		return len(rightRunes)
+	}
+	if len(rightRunes) == 0 {
+		return len(leftRunes)
+	}
+
+	prev := make([]int, len(rightRunes)+1)
+	curr := make([]int, len(rightRunes)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i, leftRune := range leftRunes {
+		curr[0] = i + 1
+		for j, rightRune := range rightRunes {
+			cost := 0
+			if leftRune != rightRune {
+				cost = 1
+			}
+			deletion := prev[j+1] + 1
+			insertion := curr[j] + 1
+			substitution := prev[j] + cost
+			curr[j+1] = minInt(deletion, insertion, substitution)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(rightRunes)]
+}
+
+func minInt(values ...int) int {
+	best := values[0]
+	for _, value := range values[1:] {
+		if value < best {
+			best = value
+		}
+	}
+	return best
 }

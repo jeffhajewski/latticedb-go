@@ -22,7 +22,7 @@ The suite covers:
 - query mutation atomicity
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
 - parallel-edge targeting and single-edge deletion via stable edge ID
-- direct vector search and full-text search
+- direct vector search and full-text search, including fuzzy-search permissiveness
 - vector and full-text query operators preserving additional `MATCH` bindings, row multiplicity, and `AND` filters
 - query cache management behavior
 - crash recovery of committed graph state, secondary labels, and committed node/edge-property updates

@@ -876,6 +876,36 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 		t.Fatalf("expected weaker graph match %d second, got %d", miscGraphDocID, ftsResults[1].NodeID)
 	}
 
+	strictFTSResults, err := db.FTSSearch("grahp databases", FTSSearchOptions{
+		Limit:         5,
+		MaxDistance:   0,
+		MinTermLength: 1,
+	})
+	if err != nil {
+		t.Fatalf("strict direct fts search: %v", err)
+	}
+	if len(strictFTSResults) != 1 || strictFTSResults[0].NodeID != nearDocID {
+		t.Fatalf("unexpected strict fts results: %#v", strictFTSResults)
+	}
+
+	looseFTSResults, err := db.FTSSearch("grahp databases", FTSSearchOptions{
+		Limit:         5,
+		MaxDistance:   2,
+		MinTermLength: 1,
+	})
+	if err != nil {
+		t.Fatalf("loose direct fts search: %v", err)
+	}
+	if len(looseFTSResults) < len(strictFTSResults) {
+		t.Fatalf("expected loose fts results %#v to be at least as permissive as strict %#v", looseFTSResults, strictFTSResults)
+	}
+	if looseFTSResults[0].NodeID != nearDocID {
+		t.Fatalf("expected fuzzy match to keep best document %d first, got %#v", nearDocID, looseFTSResults)
+	}
+	if !ftsResultsContain(looseFTSResults, miscGraphDocID) {
+		t.Fatalf("expected loose fts results to include weaker fuzzy match %d, got %#v", miscGraphDocID, looseFTSResults)
+	}
+
 	ftsQuery, err := db.Query(
 		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" RETURN c.name AS category, d.name AS document LIMIT 1",
 		nil,
@@ -1057,6 +1087,15 @@ func requireSingleValue(t *testing.T, result QueryResult, column string) Value {
 		t.Fatalf("missing column %q in row %#v", column, result.Rows[0])
 	}
 	return value
+}
+
+func ftsResultsContain(results []FTSSearchResult, nodeID uint64) bool {
+	for _, result := range results {
+		if result.NodeID == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneValueMap(values map[string]Value) map[string]Value {
