@@ -452,6 +452,61 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 	requireSingleIntResult(t, result, "count", 1)
 }
 
+func TestConformanceDirectionalTraversalAndUnknownRelationshipTypes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "directionality.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+	defer closeDB(t, db)
+
+	err := db.Update(func(tx Tx) error {
+		alice, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person"},
+			Properties: map[string]Value{"name": "Alice"},
+		})
+		if err != nil {
+			return err
+		}
+		bob, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person"},
+			Properties: map[string]Value{"name": "Bob"},
+		})
+		if err != nil {
+			return err
+		}
+		_, err = tx.CreateEdge(alice.ID, bob.ID, "KNOWS", CreateEdgeOptions{})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed directionality graph: %v", err)
+	}
+
+	result, err := db.Query(
+		"MATCH (a:Person {name: \"Alice\"})-[:KNOWS]->(b:Person {name: \"Bob\"}) RETURN count(b) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("query forward directional edge: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query(
+		"MATCH (a:Person {name: \"Bob\"})-[:KNOWS]->(b:Person {name: \"Alice\"}) RETURN count(b) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("query reverse directional edge: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 0)
+
+	result, err = db.Query(
+		"MATCH (a:Person)-[:UNKNOWN]->(b:Person) RETURN count(b) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("query unknown relationship type: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 0)
+}
+
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "mvcc.ltdb")
 	db := openDB(t, dbPath, OpenOptions{Create: true})

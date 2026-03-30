@@ -18,6 +18,7 @@ The suite covers:
 - query projection and `UNWIND` preserving bytes, vectors, and nested values
 - missing versus stored `NULL` semantics in direct property APIs
 - `IS NULL` / `IS NOT NULL` semantics over query property access results
+- directional traversal and empty results for unknown relationship types
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
