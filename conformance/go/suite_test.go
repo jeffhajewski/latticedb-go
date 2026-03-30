@@ -807,6 +807,9 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 		if _, err := tx.CreateEdge(docNear.ID, categoryDB.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
 			return err
 		}
+		if _, err := tx.CreateEdge(docNear.ID, categoryDB.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
+			return err
+		}
 		if _, err := tx.CreateEdge(docMiscGraph.ID, categoryMisc.ID, "TAGGED", CreateEdgeOptions{}); err != nil {
 			return err
 		}
@@ -866,6 +869,12 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	if ftsResults[0].NodeID != nearDocID {
 		t.Fatalf("expected graph-focused document %d to rank first, got %d", nearDocID, ftsResults[0].NodeID)
 	}
+	if len(ftsResults) < 2 {
+		t.Fatalf("expected at least 2 direct fts results, got %d", len(ftsResults))
+	}
+	if ftsResults[1].NodeID != miscGraphDocID {
+		t.Fatalf("expected weaker graph match %d second, got %d", miscGraphDocID, ftsResults[1].NodeID)
+	}
 
 	ftsQuery, err := db.Query(
 		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" RETURN c.name AS category, d.name AS document LIMIT 1",
@@ -886,6 +895,24 @@ func TestConformanceSearchSemanticsAndQueryCache(t *testing.T) {
 	}
 	requireSingleStringResult(t, filteredFTSQuery, "category", "Misc")
 	requireSingleStringResult(t, filteredFTSQuery, "document", "Doc Misc Graph")
+
+	vectorMultiplicityQuery, err := db.Query(
+		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.embedding <=> $query AND c.name = \"Databases\" RETURN count(d) AS count",
+		map[string]Value{"query": []float32{1.0, 0.0, 0.0, 0.0}},
+	)
+	if err != nil {
+		t.Fatalf("vector multiplicity query: %v", err)
+	}
+	requireSingleIntResult(t, vectorMultiplicityQuery, "count", 2)
+
+	ftsMultiplicityQuery, err := db.Query(
+		"MATCH (d:Document)-[:TAGGED]->(c:Category) WHERE d.text @@ \"graph\" AND c.name = \"Databases\" RETURN count(d) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("fts multiplicity query: %v", err)
+	}
+	requireSingleIntResult(t, ftsMultiplicityQuery, "count", 2)
 
 	statsAfterFirst, err := db.CacheStats()
 	if err != nil {
