@@ -324,6 +324,18 @@ func TestConformanceLabelOrderAndUnlabeledNodes(t *testing.T) {
 	}
 	requireSingleIntResult(t, result, "count", 1)
 
+	result, err = db.Query(`MATCH (n:Person) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query single-label match without duplicating multi-label nodes: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query(`MATCH (n) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query all nodes without duplicating multi-label nodes: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 2)
+
 	result, err = db.Query(`MATCH (n {name: "NoLabel"}) RETURN count(n) AS count`, nil)
 	if err != nil {
 		t.Fatalf("query unlabeled node by property: %v", err)
