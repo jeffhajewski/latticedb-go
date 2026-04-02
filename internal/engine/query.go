@@ -16,6 +16,7 @@ type queryPlan struct {
 	unwindClause  *unwindClause
 	matchPatterns []matchPattern
 	whereClauses  []*whereClause
+	createNode    *createNodeClause
 	setClause     *setClause
 	createClause  *createClause
 	removeClause  *removeClause
@@ -71,6 +72,12 @@ type createClause struct {
 	TargetVar string
 	EdgeType  string
 	Props     map[string]valueExpr
+}
+
+type createNodeClause struct {
+	Var    string
+	Labels []string
+	Props  map[string]valueExpr
 }
 
 type setKind string
@@ -158,6 +165,8 @@ func parseQuery(query string) (*queryPlan, error) {
 	switch {
 	case strings.HasPrefix(query, "MATCH "):
 		return parseMatchQuery(query)
+	case strings.HasPrefix(query, "CREATE "):
+		return parseCreateQuery(query)
 	case strings.HasPrefix(query, "UNWIND "):
 		return parseUnwindQuery(query)
 	default:
@@ -280,8 +289,40 @@ func parseUnwindQuery(query string) (*queryPlan, error) {
 	return plan, nil
 }
 
+func parseCreateQuery(query string) (*queryPlan, error) {
+	rest := strings.TrimSpace(strings.TrimPrefix(query, "CREATE "))
+	createText, nextKeyword, tail := splitOnNextClause(rest, " RETURN ")
+	createNode, err := parseCreateNodeClause(createText)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := &queryPlan{createNode: createNode}
+	switch nextKeyword {
+	case "":
+		return plan, nil
+	case " RETURN ":
+		returnText, limitText, hasLimit := splitLimitClause(tail)
+		returnClause, err := parseReturnClause(returnText)
+		if err != nil {
+			return nil, err
+		}
+		plan.returnClause = returnClause
+		if hasLimit {
+			limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+			if err != nil {
+				return nil, fmt.Errorf("invalid LIMIT %q", limitText)
+			}
+			plan.limit = limit
+		}
+		return plan, nil
+	default:
+		return nil, fmt.Errorf("unsupported terminal clause %q", nextKeyword)
+	}
+}
+
 func (plan *queryPlan) mutates() bool {
-	return plan.setClause != nil || plan.createClause != nil || plan.removeClause != nil || plan.deleteClause != nil
+	return plan.createNode != nil || plan.setClause != nil || plan.createClause != nil || plan.removeClause != nil || plan.deleteClause != nil
 }
 
 func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, error) {
@@ -311,6 +352,13 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 		}
 	}
 
+	if plan.createNode != nil {
+		var err error
+		rows, err = plan.createNode.apply(tx, rows, params)
+		if err != nil {
+			return QueryResult{}, err
+		}
+	}
 	if plan.createClause != nil {
 		if err := plan.createClause.apply(tx, rows, params); err != nil {
 			return QueryResult{}, err
@@ -614,6 +662,45 @@ func parseCreateClause(text string) (*createClause, error) {
 		EdgeType:  strings.TrimSpace(edgeSegments[1]),
 		Props:     props,
 	}, nil
+}
+
+func parseCreateNodeClause(text string) (*createNodeClause, error) {
+	body, err := trimEnclosed(text, '(', ')')
+	if err != nil {
+		return nil, err
+	}
+
+	props := map[string]valueExpr{}
+	propStart := findTopLevelRune(body, '{')
+	prefix := strings.TrimSpace(body)
+	if propStart >= 0 {
+		propEnd := findMatchingBrace(body, propStart, '{', '}')
+		if propEnd < 0 {
+			return nil, fmt.Errorf("unterminated CREATE property map in %q", text)
+		}
+		parsedProps, err := parsePropertyExprMap(body[propStart+1 : propEnd])
+		if err != nil {
+			return nil, err
+		}
+		props = parsedProps
+		prefix = strings.TrimSpace(body[:propStart])
+	}
+
+	segments := strings.Split(prefix, ":")
+	clause := &createNodeClause{Props: props}
+	if len(segments) > 0 {
+		first := strings.TrimSpace(segments[0])
+		if first != "" {
+			clause.Var = first
+		}
+	}
+	for _, segment := range segments[1:] {
+		label := strings.TrimSpace(segment)
+		if label != "" {
+			clause.Labels = append(clause.Labels, label)
+		}
+	}
+	return clause, nil
 }
 
 func parseDeleteClause(text string) (*deleteClause, error) {
@@ -963,6 +1050,39 @@ func (clause *setClause) apply(rows []queryRow, params map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func (clause *createNodeClause) apply(tx *Tx, rows []queryRow, params map[string]any) ([]queryRow, error) {
+	nextRows := make([]queryRow, 0, len(rows))
+	for _, row := range rows {
+		props := make(map[string]any, len(clause.Props))
+		for key, expr := range clause.Props {
+			value, err := expr.eval(row, params)
+			if err != nil {
+				return nil, err
+			}
+			normalized, err := store.NormalizeValue(value)
+			if err != nil {
+				return nil, err
+			}
+			props[key] = normalized
+		}
+
+		node, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     slices.Clone(clause.Labels),
+			Properties: props,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		nextRow := row.clone()
+		if clause.Var != "" {
+			nextRow.Bindings[clause.Var] = boundValue{Node: tx.graph.Nodes[node.ID]}
+		}
+		nextRows = append(nextRows, nextRow)
+	}
+	return nextRows, nil
 }
 
 func (clause *removeClause) apply(rows []queryRow) error {

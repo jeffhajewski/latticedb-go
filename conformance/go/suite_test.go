@@ -614,6 +614,83 @@ func TestConformanceDirectionalTraversalAndUnknownRelationshipTypes(t *testing.T
 	requireSingleIntResult(t, result, "count", 0)
 }
 
+func TestConformanceQueryCreateNodeWithLabelsAndProperties(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "query_create.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+	defer closeDB(t, db)
+
+	result, err := db.Query(
+		"CREATE (n:Profile:Employee {name: $name, payload: $payload, vector: $vector, meta: $meta}) RETURN id(n) AS id, n.name AS name",
+		map[string]Value{
+			"name":    "Carol",
+			"payload": []byte{1, 2, 3},
+			"vector":  []float32{1.0, 2.0, 3.0},
+			"meta": map[string]Value{
+				"team": "graph",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("query create node: %v", err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"id", "name"}) {
+		t.Fatalf("unexpected create result columns: %#v", result.Columns)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 created row, got %d", len(result.Rows))
+	}
+	if result.Rows[0]["name"] != "Carol" {
+		t.Fatalf("unexpected created node name: %#v", result.Rows[0]["name"])
+	}
+
+	idValue, ok := result.Rows[0]["id"].(int64)
+	if !ok || idValue <= 0 {
+		t.Fatalf("unexpected created node id: %#v", result.Rows[0]["id"])
+	}
+	createdID := uint64(idValue)
+
+	err = db.View(func(tx Tx) error {
+		node, err := tx.GetNode(createdID)
+		if err != nil {
+			return err
+		}
+		if node == nil {
+			t.Fatalf("expected created node %d to exist", createdID)
+		}
+		if !reflect.DeepEqual(node.Labels, []string{"Profile", "Employee"}) {
+			t.Fatalf("unexpected created node labels: %#v", node.Labels)
+		}
+
+		payload, ok, err := tx.GetProperty(createdID, "payload")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(payload, []byte{1, 2, 3}) {
+			t.Fatalf("unexpected created payload: ok=%v value=%#v", ok, payload)
+		}
+
+		vector, ok, err := tx.GetProperty(createdID, "vector")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(vector, []float32{1.0, 2.0, 3.0}) {
+			t.Fatalf("unexpected created vector: ok=%v value=%#v", ok, vector)
+		}
+
+		meta, ok, err := tx.GetProperty(createdID, "meta")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(meta, map[string]Value{"team": "graph"}) {
+			t.Fatalf("unexpected created meta property: ok=%v value=%#v", ok, meta)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("validate created node: %v", err)
+	}
+}
+
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "mvcc.ltdb")
 	db := openDB(t, dbPath, OpenOptions{Create: true})
