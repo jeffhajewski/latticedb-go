@@ -13,6 +13,7 @@ It runs against adapter implementations supplied by this repo:
 The suite covers:
 
 - persistence across reopen
+- label insertion-order round-trip in direct APIs, multi-label query order independence, and unlabeled nodes
 - stable monotonic edge identity across rollback and reopen
 - nested value round-trips
 - query projection and `UNWIND` preserving bytes, vectors, and nested values

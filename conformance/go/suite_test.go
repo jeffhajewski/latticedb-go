@@ -269,6 +269,74 @@ func TestConformancePersistenceAndStableEdgeIdentity(t *testing.T) {
 	}
 }
 
+func TestConformanceLabelOrderAndUnlabeledNodes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "labels.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+	defer closeDB(t, db)
+
+	var unlabeledID uint64
+	err := db.Update(func(tx Tx) error {
+		if _, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person", "Employee"},
+			Properties: map[string]Value{"name": "Alice"},
+		}); err != nil {
+			return err
+		}
+		unlabeled, err := tx.CreateNode(CreateNodeOptions{
+			Properties: map[string]Value{"name": "NoLabel"},
+		})
+		if err != nil {
+			return err
+		}
+		unlabeledID = unlabeled.ID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed label-order graph: %v", err)
+	}
+
+	err = db.View(func(tx Tx) error {
+		node, err := tx.GetNode(unlabeledID)
+		if err != nil {
+			return err
+		}
+		if node == nil {
+			t.Fatalf("expected unlabeled node to exist")
+		}
+		if len(node.Labels) != 0 {
+			t.Fatalf("expected unlabeled node to round-trip without labels, got %#v", node.Labels)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("validate unlabeled node direct api: %v", err)
+	}
+
+	result, err := db.Query(`MATCH (n:Person:Employee {name: "Alice"}) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query multi-label conjunction in insertion order: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query(`MATCH (n:Employee:Person {name: "Alice"}) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query multi-label conjunction in reversed order: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query(`MATCH (n {name: "NoLabel"}) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query unlabeled node by property: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 1)
+
+	result, err = db.Query(`MATCH (n:Person {name: "NoLabel"}) RETURN count(n) AS count`, nil)
+	if err != nil {
+		t.Fatalf("query unlabeled node with missing label constraint: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 0)
+}
+
 func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "values.ltdb")
 	db := openDB(t, dbPath, OpenOptions{Create: true})

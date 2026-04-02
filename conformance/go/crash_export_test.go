@@ -460,11 +460,13 @@ func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
 		alpha, err := tx.CreateNode(CreateNodeOptions{
 			Labels: []string{"Person", "Employee"},
 			Properties: map[string]Value{
-				"zeta": "last",
+				"zeta":     "last",
+				"nullable": nil,
 				"nested": map[string]Value{
 					"beta":  int64(2),
 					"alpha": int64(1),
 				},
+				"list":  []Value{int64(3), "two", nil},
 				"alpha": "first",
 				"name":  "Alpha",
 			},
@@ -531,7 +533,8 @@ func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
 		edgeAlphaToBetaZeta,
 		edgeBetaToAlpha,
 	})
-	requireRawPropertyKeyOrder(t, dumpBytes, alphaID, []string{"alpha", "name", "nested", "zeta"}, "nested", []string{"alpha", "beta"})
+	requireCanonicalDumpListAndNull(t, dumpGraph, alphaID)
+	requireRawPropertyKeyOrder(t, dumpBytes, alphaID, []string{"alpha", "list", "name", "nested", "nullable", "zeta"}, "nested", []string{"alpha", "beta"})
 
 	secondDump := mustDump(t, exporter, dbPath)
 	if string(dumpBytes) != string(secondDump) {
@@ -781,6 +784,34 @@ func requireCanonicalEdgeOrder(t *testing.T, graph exportedGraph, wantIDs []uint
 			t.Fatalf("expected edge %d at canonical position %d, got %#v", wantID, i, graph.Edges)
 		}
 	}
+}
+
+func requireCanonicalDumpListAndNull(t *testing.T, graph exportedGraph, nodeID uint64) {
+	t.Helper()
+
+	wantID := fmt.Sprintf("%d", nodeID)
+	for _, node := range graph.Nodes {
+		if node.ID != wantID {
+			continue
+		}
+		listValue, ok := node.Properties["list"].([]any)
+		if !ok {
+			t.Fatalf("expected canonical dump list property on node %s, got %#v", wantID, node.Properties["list"])
+		}
+		if !reflect.DeepEqual(listValue, []any{float64(3), "two", nil}) {
+			t.Fatalf("unexpected canonical dump list ordering on node %s: %#v", wantID, listValue)
+		}
+		nullableValue, ok := node.Properties["nullable"]
+		if !ok {
+			t.Fatalf("missing canonical dump nullable property on node %s", wantID)
+		}
+		if nullableValue != nil {
+			t.Fatalf("expected canonical dump nullable property on node %s to round-trip as null, got %#v", wantID, nullableValue)
+		}
+		return
+	}
+
+	t.Fatalf("missing node %s when validating canonical dump list/null values", wantID)
 }
 
 func requireRawPropertyKeyOrder(t *testing.T, dumpBytes []byte, nodeID uint64, wantKeys []string, nestedKey string, wantNestedKeys []string) {
