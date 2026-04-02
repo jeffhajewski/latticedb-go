@@ -118,6 +118,7 @@ type projectionKind string
 const (
 	projectionProperty  projectionKind = "property"
 	projectionBindingID projectionKind = "binding_id"
+	projectionValue     projectionKind = "value"
 )
 
 type queryRow struct {
@@ -700,6 +701,14 @@ func parseReturnClause(text string) (*returnClause, error) {
 			})
 			continue
 		}
+		if !strings.Contains(exprText, ".") {
+			projections = append(projections, projection{
+				Kind:  projectionValue,
+				Var:   exprText,
+				Alias: alias,
+			})
+			continue
+		}
 		varName, property, err := parsePropertyAccess(exprText)
 		if err != nil {
 			return nil, err
@@ -1094,6 +1103,16 @@ func (clause *returnClause) render(rows []queryRow) (QueryResult, error) {
 					continue
 				}
 				resultRow[projection.Alias] = store.CloneValue(value)
+			case projectionValue:
+				binding, ok := row.Bindings[projection.Var]
+				if !ok {
+					resultRow[projection.Alias] = nil
+					continue
+				}
+				if !binding.HasValue {
+					return QueryResult{}, fmt.Errorf("unsupported value projection for binding %q", projection.Var)
+				}
+				resultRow[projection.Alias] = store.CloneValue(binding.Value)
 			default:
 				return QueryResult{}, fmt.Errorf("unsupported projection kind %q", projection.Kind)
 			}

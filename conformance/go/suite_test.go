@@ -501,6 +501,45 @@ func TestConformanceMissingVsNullAndNestedRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected unwind nested map row 1: %#v", result.Rows[1]["profile"])
 	}
 
+	directUnwindRows := []Value{
+		[]byte{9, 8},
+		[]float32{4.0, 5.0},
+		map[string]Value{
+			"active": true,
+			"tags":   []Value{"go", int64(9)},
+		},
+		[]Value{int64(2), "two", nil},
+		nil,
+	}
+	result, err = db.Query(
+		"UNWIND $rows AS row RETURN row AS value",
+		map[string]Value{"rows": directUnwindRows},
+	)
+	if err != nil {
+		t.Fatalf("query unwind direct values: %v", err)
+	}
+	if len(result.Rows) != 5 {
+		t.Fatalf("expected 5 direct unwind rows, got %d", len(result.Rows))
+	}
+	if !reflect.DeepEqual(result.Rows[0]["value"], []byte{9, 8}) {
+		t.Fatalf("unexpected direct unwind bytes row: %#v", result.Rows[0]["value"])
+	}
+	if !reflect.DeepEqual(result.Rows[1]["value"], []float32{4.0, 5.0}) {
+		t.Fatalf("unexpected direct unwind vector row: %#v", result.Rows[1]["value"])
+	}
+	if !reflect.DeepEqual(result.Rows[2]["value"], map[string]Value{
+		"active": true,
+		"tags":   []Value{"go", int64(9)},
+	}) {
+		t.Fatalf("unexpected direct unwind map row: %#v", result.Rows[2]["value"])
+	}
+	if !reflect.DeepEqual(result.Rows[3]["value"], []Value{int64(2), "two", nil}) {
+		t.Fatalf("unexpected direct unwind list row: %#v", result.Rows[3]["value"])
+	}
+	if result.Rows[4]["value"] != nil {
+		t.Fatalf("unexpected direct unwind null row: %#v", result.Rows[4]["value"])
+	}
+
 	result, err = db.Query("MATCH (n:Profile) WHERE n.note IS NULL RETURN count(n) AS count", nil)
 	if err != nil {
 		t.Fatalf("query stored null with IS NULL: %v", err)
