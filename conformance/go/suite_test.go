@@ -697,6 +697,7 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 	defer closeDB(t, db)
 
 	var aliceID uint64
+	var bobID uint64
 	var edge1ID uint64
 	var edge2ID uint64
 
@@ -729,6 +730,7 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		}
 
 		aliceID = alice.ID
+		bobID = bob.ID
 		edge1ID = edge1.ID
 		edge2ID = edge2.ID
 		return nil
@@ -762,6 +764,42 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		t.Fatalf("query duplicate-key edge count: %v", err)
 	}
 	requireSingleIntResult(t, result, "count", 0)
+
+	if _, err := db.Query(
+		"MATCH (n:Person), (m:Person {name: \"Alice\"}) SET n.bad = m",
+		nil,
+	); err == nil {
+		t.Fatalf("expected invalid SET mutation query to fail")
+	}
+
+	err = db.View(func(tx Tx) error {
+		aliceBad, ok, err := tx.GetProperty(aliceID, "bad")
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Fatalf("expected failed SET query to leave alice without bad property, got %#v", aliceBad)
+		}
+
+		bob, err := tx.GetNode(bobID)
+		if err != nil {
+			return err
+		}
+		if bob == nil {
+			t.Fatalf("expected bob after failed SET query")
+		}
+		bobBad, ok, err := tx.GetProperty(bob.ID, "bad")
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Fatalf("expected failed SET query to leave bob without bad property, got %#v", bobBad)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("validate failed SET query atomicity: %v", err)
+	}
 
 	if _, err := db.Query("MATCH (a)-[r:REL]->(b) WHERE r.w = 1 SET r.tag = \"selected\"", nil); err != nil {
 		t.Fatalf("selective edge mutation query: %v", err)

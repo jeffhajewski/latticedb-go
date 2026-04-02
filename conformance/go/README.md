@@ -21,7 +21,7 @@ The suite covers:
 - `IS NULL` / `IS NOT NULL` semantics over query property access results
 - directional traversal and empty results for unknown relationship types
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
-- query mutation atomicity
+- query mutation atomicity across failing `CREATE` and `SET` paths
 - duplicate query map keys rejected at public query boundaries
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
 - parallel-edge targeting and single-edge deletion via stable edge ID
