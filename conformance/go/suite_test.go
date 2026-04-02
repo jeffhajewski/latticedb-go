@@ -711,6 +711,19 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 	}
 	requireSingleIntResult(t, result, "count", 0)
 
+	if _, err := db.Query(
+		"MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:BAD {w: 1, w: 2}]->(b)",
+		nil,
+	); err == nil {
+		t.Fatalf("expected duplicate-key mutation query to fail")
+	}
+
+	result, err = db.Query("MATCH (:Person)-[r:BAD]->(:Person) RETURN count(r) AS count", nil)
+	if err != nil {
+		t.Fatalf("query duplicate-key edge count: %v", err)
+	}
+	requireSingleIntResult(t, result, "count", 0)
+
 	if _, err := db.Query("MATCH (a)-[r:REL]->(b) WHERE r.w = 1 SET r.tag = \"selected\"", nil); err != nil {
 		t.Fatalf("selective edge mutation query: %v", err)
 	}

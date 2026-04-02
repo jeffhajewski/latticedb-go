@@ -1197,6 +1197,9 @@ func parsePropertyLiteralMap(text string) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("MATCH properties require literal values, got %q", rawValue)
 		}
+		if _, exists := out[key]; exists {
+			return nil, fmt.Errorf("duplicate map key %q", key)
+		}
 		out[key] = literal.Value
 	}
 	return out, nil
@@ -1215,6 +1218,9 @@ func parsePropertyExprMap(text string) (map[string]valueExpr, error) {
 		expr, err := parseValueExpr(rawValue)
 		if err != nil {
 			return nil, err
+		}
+		if _, exists := out[key]; exists {
+			return nil, fmt.Errorf("duplicate map key %q", key)
 		}
 		out[key] = expr
 	}

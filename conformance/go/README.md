@@ -22,6 +22,7 @@ The suite covers:
 - directional traversal and empty results for unknown relationship types
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity
+- duplicate query map keys rejected at public query boundaries
 - query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
 - parallel-edge targeting and single-edge deletion via stable edge ID
 - direct vector search and full-text search, including fuzzy-search permissiveness
