@@ -20,7 +20,7 @@ The suite covers:
 - missing versus stored `NULL` semantics in direct property APIs
 - `IS NULL` / `IS NOT NULL` semantics over query property access results
 - directional traversal and empty results for unknown relationship types
-- top-level query `CREATE` for nodes with labels and property maps
+- query `CREATE` for nodes and edges with labels/property maps
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity across failing `CREATE` and `SET` paths
 - duplicate query map keys rejected at public query boundaries

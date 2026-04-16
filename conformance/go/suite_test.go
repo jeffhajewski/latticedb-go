@@ -829,6 +829,63 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 	}
 
 	if _, err := db.Query(
+		"MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:GOOD {since: $since, payload: $payload, meta: $meta}]->(b)",
+		map[string]Value{
+			"since":   int64(2030),
+			"payload": []byte{4, 5, 6},
+			"meta": map[string]Value{
+				"team": "graph",
+			},
+		},
+	); err != nil {
+		t.Fatalf("successful edge create query: %v", err)
+	}
+
+	err = db.View(func(tx Tx) error {
+		outgoing, err := tx.GetOutgoingEdges(aliceID)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, edge := range outgoing {
+			if edge.Type != "GOOD" {
+				continue
+			}
+			found = true
+			since, ok, err := tx.GetEdgeProperty(edge.ID, "since")
+			if err != nil {
+				return err
+			}
+			if !ok || since != int64(2030) {
+				t.Fatalf("unexpected GOOD edge since property: ok=%v value=%#v", ok, since)
+			}
+
+			payload, ok, err := tx.GetEdgeProperty(edge.ID, "payload")
+			if err != nil {
+				return err
+			}
+			if !ok || !reflect.DeepEqual(payload, []byte{4, 5, 6}) {
+				t.Fatalf("unexpected GOOD edge payload: ok=%v value=%#v", ok, payload)
+			}
+
+			meta, ok, err := tx.GetEdgeProperty(edge.ID, "meta")
+			if err != nil {
+				return err
+			}
+			if !ok || !reflect.DeepEqual(meta, map[string]Value{"team": "graph"}) {
+				t.Fatalf("unexpected GOOD edge meta property: ok=%v value=%#v", ok, meta)
+			}
+		}
+		if !found {
+			t.Fatalf("expected successful query CREATE to add GOOD edge")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("validate successful edge create query: %v", err)
+	}
+
+	if _, err := db.Query(
 		"MATCH (a:Person {name: \"Alice\"}), (b:Person {name: \"Bob\"}) CREATE (a)-[:BAD {owner: a}]->(b)",
 		nil,
 	); err == nil {
@@ -988,8 +1045,21 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		if err != nil {
 			return err
 		}
-		if len(outgoing) != 2 {
-			t.Fatalf("expected both parallel edges to remain, got %d", len(outgoing))
+		relCount := 0
+		goodCount := 0
+		for _, edge := range outgoing {
+			switch edge.Type {
+			case "REL":
+				relCount++
+			case "GOOD":
+				goodCount++
+			}
+		}
+		if relCount != 2 {
+			t.Fatalf("expected both parallel REL edges to remain, got %d in %#v", relCount, outgoing)
+		}
+		if goodCount != 1 {
+			t.Fatalf("expected successful query CREATE edge to remain, got %d in %#v", goodCount, outgoing)
 		}
 		return nil
 	})
@@ -1009,11 +1079,24 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		if err != nil {
 			return err
 		}
-		if len(outgoing) != 1 {
-			t.Fatalf("expected exactly 1 outgoing edge after targeted delete, got %d", len(outgoing))
+		relCount := 0
+		goodCount := 0
+		for _, edge := range outgoing {
+			switch edge.Type {
+			case "REL":
+				relCount++
+				if edge.ID != edge2ID {
+					t.Fatalf("expected surviving REL edge id %d, got %d", edge2ID, edge.ID)
+				}
+			case "GOOD":
+				goodCount++
+			}
 		}
-		if outgoing[0].ID != edge2ID {
-			t.Fatalf("expected surviving edge id %d, got %d", edge2ID, outgoing[0].ID)
+		if relCount != 1 {
+			t.Fatalf("expected exactly 1 surviving REL edge after targeted delete, got %d in %#v", relCount, outgoing)
+		}
+		if goodCount != 1 {
+			t.Fatalf("expected GOOD edge to remain after targeted delete, got %d in %#v", goodCount, outgoing)
 		}
 		return nil
 	})
