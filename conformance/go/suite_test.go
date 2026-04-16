@@ -1007,6 +1007,34 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		t.Fatalf("selective edge mutation query: %v", err)
 	}
 
+	if _, err := db.Query(
+		"MATCH (a)-[r:REL]->(b) WHERE id(r) = $edgeID SET r += {note: \"keep\", temp: \"remove\"}",
+		map[string]Value{"edgeID": edge1ID},
+	); err != nil {
+		t.Fatalf("edge property-map merge query: %v", err)
+	}
+
+	if _, err := db.Query(
+		"MATCH (a)-[r:REL]->(b) WHERE id(r) = $edgeID REMOVE r.note",
+		map[string]Value{"edgeID": edge1ID},
+	); err != nil {
+		t.Fatalf("edge property remove query: %v", err)
+	}
+
+	if _, err := db.Query(
+		"MATCH (a)-[r:REL]->(b) WHERE id(r) = $edgeID SET r.temp = null",
+		map[string]Value{"edgeID": edge1ID},
+	); err != nil {
+		t.Fatalf("edge null-removal query: %v", err)
+	}
+
+	if _, err := db.Query(
+		"MATCH (a)-[r:REL]->(b) WHERE id(r) = $edgeID SET r = {w: 22, channel: \"secondary\"}",
+		map[string]Value{"edgeID": edge2ID},
+	); err != nil {
+		t.Fatalf("edge property-map replacement query: %v", err)
+	}
+
 	err = db.View(func(tx Tx) error {
 		tag1, ok, err := tx.GetEdgeProperty(edge1ID, "tag")
 		if err != nil {
@@ -1022,6 +1050,46 @@ func TestConformanceQueryMutationAtomicityAndParallelEdgeTargeting(t *testing.T)
 		}
 		if ok {
 			t.Fatalf("expected second parallel edge to remain untagged, got %#v", tag2)
+		}
+
+		w1, ok, err := tx.GetEdgeProperty(edge1ID, "w")
+		if err != nil {
+			return err
+		}
+		if !ok || w1 != int64(1) {
+			t.Fatalf("unexpected first edge weight after edge mutations: ok=%v value=%#v", ok, w1)
+		}
+
+		_, ok, err = tx.GetEdgeProperty(edge1ID, "note")
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Fatalf("expected edge REMOVE r.note to delete property")
+		}
+
+		_, ok, err = tx.GetEdgeProperty(edge1ID, "temp")
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Fatalf("expected edge SET ... = null to remove property")
+		}
+
+		w2, ok, err := tx.GetEdgeProperty(edge2ID, "w")
+		if err != nil {
+			return err
+		}
+		if !ok || w2 != int64(22) {
+			t.Fatalf("unexpected second edge weight after replacement: ok=%v value=%#v", ok, w2)
+		}
+
+		channel, ok, err := tx.GetEdgeProperty(edge2ID, "channel")
+		if err != nil {
+			return err
+		}
+		if !ok || channel != "secondary" {
+			t.Fatalf("unexpected second edge channel after replacement: ok=%v value=%#v", ok, channel)
 		}
 		return nil
 	})

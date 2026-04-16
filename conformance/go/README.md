@@ -24,7 +24,7 @@ The suite covers:
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity across failing `CREATE` and `SET` paths
 - duplicate query map keys rejected at public query boundaries
-- query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics
+- query property-map replacement, property-map merge, and `SET ... = null` / `REMOVE` semantics on nodes and bound edges
 - parallel-edge targeting and single-edge deletion via stable edge ID
 - direct vector search and full-text search, including fuzzy-search permissiveness
 - vector and full-text query operators preserving additional `MATCH` bindings, row multiplicity, and `AND` filters
