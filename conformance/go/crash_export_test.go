@@ -178,8 +178,13 @@ func TestConformanceCrashRecoveryCommittedNodePropertyUpdateWinsOverAbortedUpdat
 
 	err := db.Update(func(tx Tx) error {
 		node, err := tx.CreateNode(CreateNodeOptions{
-			Labels:     []string{"Metric"},
-			Properties: map[string]Value{"score": int64(1)},
+			Labels: []string{"Metric"},
+			Properties: map[string]Value{
+				"score":   int64(1),
+				"payload": []byte{1, 1},
+				"vector":  []float32{1.0, 1.0},
+				"note":    nil,
+			},
 		})
 		if err != nil {
 			return err
@@ -192,7 +197,16 @@ func TestConformanceCrashRecoveryCommittedNodePropertyUpdateWinsOverAbortedUpdat
 	}
 
 	err = db.Update(func(tx Tx) error {
-		return tx.SetProperty(nodeID, "score", int64(7))
+		if err := tx.SetProperty(nodeID, "score", int64(7)); err != nil {
+			return err
+		}
+		if err := tx.SetProperty(nodeID, "payload", []byte{7, 8, 9}); err != nil {
+			return err
+		}
+		if err := tx.SetProperty(nodeID, "vector", []float32{7.0, 8.0}); err != nil {
+			return err
+		}
+		return tx.SetProperty(nodeID, "note", nil)
 	})
 	if err != nil {
 		t.Fatalf("commit node property update: %v", err)
@@ -201,6 +215,12 @@ func TestConformanceCrashRecoveryCommittedNodePropertyUpdateWinsOverAbortedUpdat
 	rollback := beginTx(t, db, false)
 	if err := rollback.SetProperty(nodeID, "score", int64(9)); err != nil {
 		t.Fatalf("set rolled-back node property update: %v", err)
+	}
+	if err := rollback.SetProperty(nodeID, "payload", []byte{9, 9, 9}); err != nil {
+		t.Fatalf("set rolled-back node bytes update: %v", err)
+	}
+	if err := rollback.SetProperty(nodeID, "vector", []float32{9.0, 9.0}); err != nil {
+		t.Fatalf("set rolled-back node vector update: %v", err)
 	}
 	rollbackTx(t, rollback)
 
@@ -222,6 +242,30 @@ func TestConformanceCrashRecoveryCommittedNodePropertyUpdateWinsOverAbortedUpdat
 		}
 		if !ok || score != int64(7) {
 			t.Fatalf("unexpected recovered node property: ok=%v value=%#v", ok, score)
+		}
+
+		payload, ok, err := tx.GetProperty(nodeID, "payload")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(payload, []byte{7, 8, 9}) {
+			t.Fatalf("unexpected recovered node bytes property: ok=%v value=%#v", ok, payload)
+		}
+
+		vector, ok, err := tx.GetProperty(nodeID, "vector")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(vector, []float32{7.0, 8.0}) {
+			t.Fatalf("unexpected recovered node vector property: ok=%v value=%#v", ok, vector)
+		}
+
+		note, ok, err := tx.GetProperty(nodeID, "note")
+		if err != nil {
+			return err
+		}
+		if !ok || note != nil {
+			t.Fatalf("unexpected recovered node null property: ok=%v value=%#v", ok, note)
 		}
 		return nil
 	})
@@ -259,8 +303,11 @@ func TestConformanceCrashRecoverySecondaryLabelsAndEdgeProperties(t *testing.T) 
 		}
 		edge, err := tx.CreateEdge(alice.ID, bob.ID, "KNOWS", CreateEdgeOptions{
 			Properties: map[string]Value{
-				"since": int64(2026),
-				"note":  "stable",
+				"since":    int64(2026),
+				"note":     "stable",
+				"payload":  []byte{5, 6, 7},
+				"vector":   []float32{2.0, 4.0},
+				"nullable": nil,
 			},
 		})
 		if err != nil {
@@ -315,6 +362,30 @@ func TestConformanceCrashRecoverySecondaryLabelsAndEdgeProperties(t *testing.T) 
 			t.Fatalf("unexpected recovered edge property note: ok=%v value=%#v", ok, note)
 		}
 
+		payload, ok, err := tx.GetEdgeProperty(edgeID, "payload")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(payload, []byte{5, 6, 7}) {
+			t.Fatalf("unexpected recovered edge property payload: ok=%v value=%#v", ok, payload)
+		}
+
+		vector, ok, err := tx.GetEdgeProperty(edgeID, "vector")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(vector, []float32{2.0, 4.0}) {
+			t.Fatalf("unexpected recovered edge property vector: ok=%v value=%#v", ok, vector)
+		}
+
+		nullable, ok, err := tx.GetEdgeProperty(edgeID, "nullable")
+		if err != nil {
+			return err
+		}
+		if !ok || nullable != nil {
+			t.Fatalf("unexpected recovered edge property nullable: ok=%v value=%#v", ok, nullable)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -336,7 +407,7 @@ func TestConformanceCrashRecoverySecondaryLabelsAndEdgeProperties(t *testing.T) 
 	}
 
 	edgeQuery, err := db.Query(
-		"MATCH (:Person)-[r:KNOWS]->(:Person) RETURN r.since AS since, r.note AS note",
+		"MATCH (:Person)-[r:KNOWS]->(:Person) RETURN r.since AS since, r.note AS note, r.payload AS payload, r.vector AS vector, r.nullable AS nullable",
 		nil,
 	)
 	if err != nil {
@@ -346,6 +417,15 @@ func TestConformanceCrashRecoverySecondaryLabelsAndEdgeProperties(t *testing.T) 
 		t.Fatalf("expected 1 recovered edge row, got %d", len(edgeQuery.Rows))
 	}
 	if edgeQuery.Rows[0]["since"] != int64(2026) || edgeQuery.Rows[0]["note"] != "stable" {
+		t.Fatalf("unexpected recovered edge query row: %#v", edgeQuery.Rows[0])
+	}
+	if !reflect.DeepEqual(edgeQuery.Rows[0]["payload"], []byte{5, 6, 7}) {
+		t.Fatalf("unexpected recovered edge query payload: %#v", edgeQuery.Rows[0]["payload"])
+	}
+	if !reflect.DeepEqual(edgeQuery.Rows[0]["vector"], []float32{2.0, 4.0}) {
+		t.Fatalf("unexpected recovered edge query vector: %#v", edgeQuery.Rows[0]["vector"])
+	}
+	if edgeQuery.Rows[0]["nullable"] != nil {
 		t.Fatalf("unexpected recovered edge query row: %#v", edgeQuery.Rows[0])
 	}
 }

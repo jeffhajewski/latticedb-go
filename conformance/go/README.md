@@ -12,7 +12,7 @@ It runs against adapter implementations supplied by this repo:
 
 The suite covers:
 
-- persistence across reopen
+- persistence across reopen, including bytes/vectors/explicit `NULL` on node and edge properties
 - label insertion-order round-trip in direct APIs, multi-label query order independence, no duplicate query rows from multi-label nodes, and unlabeled nodes
 - stable monotonic edge identity across rollback and reopen
 - nested value round-trips
@@ -29,7 +29,7 @@ The suite covers:
 - direct vector search and full-text search, including fuzzy-search permissiveness
 - vector and full-text query operators preserving additional `MATCH` bindings, row multiplicity, and `AND` filters
 - query cache management behavior
-- crash recovery of committed graph state, secondary labels, and committed node/edge-property updates
+- crash recovery of committed graph state, secondary labels, and committed node/edge-property updates, including bytes/vectors/explicit `NULL`
 - canonical dump/export invariants
 
 The suite intentionally does not freeze overlapping live writer behavior. Portable callers should serialize write transactions that may touch the same logical record, and future engines are free to provide stronger conflict detection or isolation than the current reference engine exposes publicly.

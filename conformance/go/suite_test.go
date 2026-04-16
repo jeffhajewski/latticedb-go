@@ -124,7 +124,10 @@ func TestConformancePersistenceAndStableEdgeIdentity(t *testing.T) {
 		alice, err := tx.CreateNode(CreateNodeOptions{
 			Labels: []string{"Person", "Employee"},
 			Properties: map[string]Value{
-				"name": "Alice",
+				"name":    "Alice",
+				"payload": []byte{1, 2, 3},
+				"vector":  []float32{1.0, 2.5, 3.0},
+				"note":    nil,
 				"meta": map[string]Value{
 					"team": "graph",
 				},
@@ -141,7 +144,12 @@ func TestConformancePersistenceAndStableEdgeIdentity(t *testing.T) {
 			return err
 		}
 		edge1, err := tx.CreateEdge(alice.ID, bob.ID, "KNOWS", CreateEdgeOptions{
-			Properties: map[string]Value{"since": int64(2024)},
+			Properties: map[string]Value{
+				"since":   int64(2024),
+				"payload": []byte{9, 9},
+				"vector":  []float32{0.25, 0.75},
+				"note":    nil,
+			},
 		})
 		if err != nil {
 			return err
@@ -217,12 +225,60 @@ func TestConformancePersistenceAndStableEdgeIdentity(t *testing.T) {
 			t.Fatalf("unexpected meta property: %#v", meta)
 		}
 
+		payload, ok, err := tx.GetProperty(aliceID, "payload")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(payload, []byte{1, 2, 3}) {
+			t.Fatalf("unexpected bytes property after reopen: ok=%v value=%#v", ok, payload)
+		}
+
+		vector, ok, err := tx.GetProperty(aliceID, "vector")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(vector, []float32{1.0, 2.5, 3.0}) {
+			t.Fatalf("unexpected vector property after reopen: ok=%v value=%#v", ok, vector)
+		}
+
+		note, ok, err := tx.GetProperty(aliceID, "note")
+		if err != nil {
+			return err
+		}
+		if !ok || note != nil {
+			t.Fatalf("unexpected null property after reopen: ok=%v value=%#v", ok, note)
+		}
+
 		edge1Since, ok, err := tx.GetEdgeProperty(edge1ID, "since")
 		if err != nil {
 			return err
 		}
 		if !ok || edge1Since != int64(2024) {
 			t.Fatalf("unexpected edge1 property: ok=%v value=%#v", ok, edge1Since)
+		}
+
+		edge1Payload, ok, err := tx.GetEdgeProperty(edge1ID, "payload")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(edge1Payload, []byte{9, 9}) {
+			t.Fatalf("unexpected edge1 bytes property: ok=%v value=%#v", ok, edge1Payload)
+		}
+
+		edge1Vector, ok, err := tx.GetEdgeProperty(edge1ID, "vector")
+		if err != nil {
+			return err
+		}
+		if !ok || !reflect.DeepEqual(edge1Vector, []float32{0.25, 0.75}) {
+			t.Fatalf("unexpected edge1 vector property: ok=%v value=%#v", ok, edge1Vector)
+		}
+
+		edge1Note, ok, err := tx.GetEdgeProperty(edge1ID, "note")
+		if err != nil {
+			return err
+		}
+		if !ok || edge1Note != nil {
+			t.Fatalf("unexpected edge1 null property: ok=%v value=%#v", ok, edge1Note)
 		}
 
 		edge2Since, ok, err := tx.GetEdgeProperty(edge2ID, "since")
