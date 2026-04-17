@@ -456,7 +456,14 @@ func TestConformanceExportAndDumpInvariants(t *testing.T) {
 			return err
 		}
 		if _, err := tx.CreateEdge(alice.ID, bob.ID, "REL", CreateEdgeOptions{
-			Properties: map[string]Value{"since": int64(2020), "status": "active"},
+			Properties: map[string]Value{
+				"since":    int64(2020),
+				"status":   "active",
+				"list":     []Value{int64(3), "two", nil},
+				"nested":   map[string]Value{"beta": int64(2), "alpha": int64(1)},
+				"nullable": nil,
+				"vector":   []float32{1.5, 2.5},
+			},
 		}); err != nil {
 			return err
 		}
@@ -576,7 +583,20 @@ func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		edge3, err := tx.CreateEdge(alpha.ID, beta.ID, "ALPHA", CreateEdgeOptions{})
+		edge3, err := tx.CreateEdge(alpha.ID, beta.ID, "ALPHA", CreateEdgeOptions{
+			Properties: map[string]Value{
+				"zeta":     "last",
+				"nullable": nil,
+				"status":   "active",
+				"nested": map[string]Value{
+					"beta":  int64(2),
+					"alpha": int64(1),
+				},
+				"list":   []Value{int64(3), "two", nil},
+				"alpha":  "first",
+				"vector": []float32{1.5, 2.5},
+			},
+		})
 		if err != nil {
 			return err
 		}
@@ -614,7 +634,9 @@ func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
 		edgeBetaToAlpha,
 	})
 	requireCanonicalDumpListAndNull(t, dumpGraph, alphaID)
+	requireCanonicalDumpEdgeValues(t, dumpGraph, edgeAlphaToBetaAlpha1)
 	requireRawPropertyKeyOrder(t, dumpBytes, alphaID, []string{"alpha", "list", "name", "nested", "nullable", "zeta"}, "nested", []string{"alpha", "beta"})
+	requireRawEdgePropertyKeyOrder(t, dumpBytes, edgeAlphaToBetaAlpha1, []string{"alpha", "list", "nested", "nullable", "status", "vector", "zeta"}, "nested", []string{"alpha", "beta"})
 
 	secondDump := mustDump(t, exporter, dbPath)
 	if string(dumpBytes) != string(secondDump) {
@@ -708,6 +730,7 @@ func validateJSONLExport(t *testing.T, path string) {
 			switch jsonIntValue(t, props["since"]) {
 			case 2020:
 				found2020 = true
+				requireRichEdgeProperties(t, props)
 			case 2021:
 				found2021 = true
 			}
@@ -803,15 +826,53 @@ func requireExportEdgeProperties(t *testing.T, graph exportedGraph) {
 		switch jsonIntValue(t, edge.Properties["since"]) {
 		case 2020:
 			found2020 = true
-			if status := fmt.Sprint(edge.Properties["status"]); status != "active" {
-				t.Fatalf("expected 2020 edge status active, got %#v", edge.Properties["status"])
-			}
+			requireRichEdgeProperties(t, edge.Properties)
 		case 2021:
 			found2021 = true
 		}
 	}
 	if !found2020 || !found2021 {
 		t.Fatalf("expected export to preserve both parallel edges, got %#v", graph.Edges)
+	}
+}
+
+func requireRichEdgeProperties(t *testing.T, props map[string]any) {
+	t.Helper()
+
+	if status := fmt.Sprint(props["status"]); status != "active" {
+		t.Fatalf("expected rich edge status active, got %#v", props["status"])
+	}
+
+	listValue, ok := props["list"].([]any)
+	if !ok {
+		t.Fatalf("expected rich edge list property, got %#v", props["list"])
+	}
+	if !reflect.DeepEqual(listValue, []any{float64(3), "two", nil}) {
+		t.Fatalf("unexpected rich edge list ordering: %#v", listValue)
+	}
+
+	nestedValue, ok := props["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected rich edge nested property, got %#v", props["nested"])
+	}
+	if jsonIntValue(t, nestedValue["alpha"]) != 1 || jsonIntValue(t, nestedValue["beta"]) != 2 {
+		t.Fatalf("unexpected rich edge nested property values: %#v", nestedValue)
+	}
+
+	nullableValue, ok := props["nullable"]
+	if !ok {
+		t.Fatalf("missing rich edge nullable property")
+	}
+	if nullableValue != nil {
+		t.Fatalf("expected rich edge nullable property to round-trip as null, got %#v", nullableValue)
+	}
+
+	vectorValue, ok := props["vector"].([]any)
+	if !ok {
+		t.Fatalf("expected rich edge vector property, got %#v", props["vector"])
+	}
+	if !reflect.DeepEqual(vectorValue, []any{float64(1.5), float64(2.5)}) {
+		t.Fatalf("unexpected rich edge vector property: %#v", vectorValue)
 	}
 }
 
@@ -894,6 +955,21 @@ func requireCanonicalDumpListAndNull(t *testing.T, graph exportedGraph, nodeID u
 	t.Fatalf("missing node %s when validating canonical dump list/null values", wantID)
 }
 
+func requireCanonicalDumpEdgeValues(t *testing.T, graph exportedGraph, edgeID uint64) {
+	t.Helper()
+
+	wantID := fmt.Sprintf("%d", edgeID)
+	for _, edge := range graph.Edges {
+		if edge.ID != wantID {
+			continue
+		}
+		requireRichEdgeProperties(t, edge.Properties)
+		return
+	}
+
+	t.Fatalf("missing edge %s when validating canonical dump edge values", wantID)
+}
+
 func requireRawPropertyKeyOrder(t *testing.T, dumpBytes []byte, nodeID uint64, wantKeys []string, nestedKey string, wantNestedKeys []string) {
 	t.Helper()
 
@@ -937,6 +1013,51 @@ func requireRawPropertyKeyOrder(t *testing.T, dumpBytes []byte, nodeID uint64, w
 	}
 
 	t.Fatalf("missing node %s in raw canonical dump", wantID)
+}
+
+func requireRawEdgePropertyKeyOrder(t *testing.T, dumpBytes []byte, edgeID uint64, wantKeys []string, nestedKey string, wantNestedKeys []string) {
+	t.Helper()
+
+	type rawExportedGraph struct {
+		Edges []json.RawMessage `json:"edges"`
+	}
+	type rawExportedEdge struct {
+		ID         string          `json:"id"`
+		Properties json.RawMessage `json:"properties"`
+	}
+
+	var graph rawExportedGraph
+	if err := json.Unmarshal(dumpBytes, &graph); err != nil {
+		t.Fatalf("unmarshal raw dump graph: %v", err)
+	}
+
+	wantID := fmt.Sprintf("%d", edgeID)
+	for _, rawEdge := range graph.Edges {
+		var edge rawExportedEdge
+		if err := json.Unmarshal(rawEdge, &edge); err != nil {
+			t.Fatalf("unmarshal raw dump edge: %v", err)
+		}
+		if edge.ID != wantID {
+			continue
+		}
+
+		keys, values := orderedJSONObject(t, edge.Properties)
+		if !reflect.DeepEqual(keys, wantKeys) {
+			t.Fatalf("unexpected canonical edge property key order for edge %s: got %#v want %#v", wantID, keys, wantKeys)
+		}
+
+		nestedRaw, ok := values[nestedKey]
+		if !ok {
+			t.Fatalf("missing nested canonical edge property %q on edge %s", nestedKey, wantID)
+		}
+		nestedKeys, _ := orderedJSONObject(t, nestedRaw)
+		if !reflect.DeepEqual(nestedKeys, wantNestedKeys) {
+			t.Fatalf("unexpected canonical edge nested key order for edge %s property %q: got %#v want %#v", wantID, nestedKey, nestedKeys, wantNestedKeys)
+		}
+		return
+	}
+
+	t.Fatalf("missing edge %s in raw canonical dump", wantID)
 }
 
 func orderedJSONObject(t *testing.T, raw json.RawMessage) ([]string, map[string]json.RawMessage) {

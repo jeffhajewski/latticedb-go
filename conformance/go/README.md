@@ -30,7 +30,7 @@ The suite covers:
 - vector and full-text query operators preserving additional `MATCH` bindings, row multiplicity, and `AND` filters
 - query cache management behavior
 - crash recovery of committed graph state, secondary labels, and committed node/edge-property updates, including bytes/vectors/explicit `NULL`
-- canonical dump/export invariants
+- canonical dump/export invariants, including richer edge value shapes and canonical edge property ordering
 
 The suite intentionally does not freeze overlapping live writer behavior. Portable callers should serialize write transactions that may touch the same logical record, and future engines are free to provide stronger conflict detection or isolation than the current reference engine exposes publicly.
 
