@@ -22,6 +22,7 @@ Required semantics:
 - vectors remain vectors
 - query materialization must not coerce bytes into strings
 - `UNWIND` and query projection must preserve nested values and vectors
+- JSON-based dump/export surfaces must preserve the full logical value model with explicit recursive type tags so `BYTES` vs `STRING`, `VECTOR` vs `LIST`, and `INT` vs `FLOAT` remain distinguishable
 - `NULL` remains distinct from property absence in the direct property APIs
 - callers must not depend on a stable map entry order across engines or bindings
 

@@ -3,6 +3,7 @@ package conformance
 import (
 	"bufio"
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -644,23 +645,91 @@ func TestConformanceCanonicalDumpOrderingAndUnlabeledNodes(t *testing.T) {
 	}
 }
 
+func TestConformanceTypedExportPreservesLogicalValueKinds(t *testing.T) {
+	exporter := currentExporter(t)
+
+	dbPath := filepath.Join(t.TempDir(), "typed_export.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+
+	err := db.Update(func(tx Tx) error {
+		_, err := tx.CreateNode(CreateNodeOptions{
+			Labels: []string{"Typed"},
+			Properties: map[string]Value{
+				"bytes_value":  []byte{1, 2, 3},
+				"string_value": "AQID",
+				"int_value":    int64(1),
+				"float_value":  float64(1),
+				"vector_value": []float32{1, 2},
+				"list_value":   []Value{float64(1), float64(2)},
+				"nested_value": map[string]Value{
+					"inner_bytes": []byte{9},
+					"inner_float": float64(2),
+					"inner_list":  []Value{int64(3), nil},
+				},
+			},
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed typed export graph: %v", err)
+	}
+	closeDB(t, db)
+
+	jsonPath := filepath.Join(t.TempDir(), "typed.json")
+	if _, err := exporter.Export(dbPath, ExportFormatJSON, jsonPath); err != nil {
+		t.Fatalf("export typed json: %v", err)
+	}
+	jsonGraph := readJSONGraphFromFile(t, jsonPath)
+	requireGraphCounts(t, jsonGraph, 1, 0)
+	requireTypedValueKinds(t, jsonGraph.Nodes[0].Properties)
+
+	dumpGraph := readJSONGraphBytes(t, mustDump(t, exporter, dbPath))
+	requireGraphCounts(t, dumpGraph, 1, 0)
+	requireTypedValueKinds(t, dumpGraph.Nodes[0].Properties)
+
+	jsonlPath := filepath.Join(t.TempDir(), "typed.jsonl")
+	if _, err := exporter.Export(dbPath, ExportFormatJSONL, jsonlPath); err != nil {
+		t.Fatalf("export typed jsonl: %v", err)
+	}
+	requireTypedValueKinds(t, readSingleJSONLNodeProperties(t, jsonlPath))
+
+	csvPath := filepath.Join(t.TempDir(), "typed.csv")
+	if _, err := exporter.Export(dbPath, ExportFormatCSV, csvPath); err != nil {
+		t.Fatalf("export typed csv: %v", err)
+	}
+	nodesCSV := strings.TrimSuffix(csvPath, ".csv") + "_nodes.csv"
+	requireTypedValueKinds(t, readSingleCSVNodeProperties(t, nodesCSV))
+}
+
 type exportedGraph struct {
 	Nodes []exportedNode `json:"nodes"`
 	Edges []exportedEdge `json:"edges"`
 }
 
 type exportedNode struct {
-	ID         string         `json:"id"`
-	Labels     []string       `json:"labels"`
-	Properties map[string]any `json:"properties"`
+	ID         string                   `json:"id"`
+	Labels     []string                 `json:"labels"`
+	Properties map[string]exportedValue `json:"properties"`
 }
 
 type exportedEdge struct {
-	ID         string         `json:"id"`
-	Source     string         `json:"source"`
-	Target     string         `json:"target"`
-	Type       string         `json:"type"`
-	Properties map[string]any `json:"properties"`
+	ID         string                   `json:"id"`
+	Source     string                   `json:"source"`
+	Target     string                   `json:"target"`
+	Type       string                   `json:"type"`
+	Properties map[string]exportedValue `json:"properties"`
+}
+
+type exportedValue struct {
+	Kind   string                   `json:"kind"`
+	Bool   bool                     `json:"bool,omitempty"`
+	Int    int64                    `json:"int,omitempty"`
+	Float  float64                  `json:"float,omitempty"`
+	String string                   `json:"string,omitempty"`
+	Bytes  []byte                   `json:"bytes,omitempty"`
+	Vector []float32                `json:"vector,omitempty"`
+	List   []exportedValue          `json:"list,omitempty"`
+	Map    map[string]exportedValue `json:"map,omitempty"`
 }
 
 func mustDump(t *testing.T, exporter Exporter, dbPath string) []byte {
@@ -690,6 +759,16 @@ func readJSONGraphBytes(t *testing.T, data []byte) exportedGraph {
 	return graph
 }
 
+type jsonlExportRecord struct {
+	Kind       string                   `json:"kind"`
+	ID         string                   `json:"id"`
+	Labels     []string                 `json:"labels"`
+	Source     string                   `json:"source"`
+	Target     string                   `json:"target"`
+	Type       string                   `json:"type"`
+	Properties map[string]exportedValue `json:"properties"`
+}
+
 func validateJSONLExport(t *testing.T, path string) {
 	t.Helper()
 
@@ -712,30 +791,27 @@ func validateJSONLExport(t *testing.T, path string) {
 			continue
 		}
 
-		var record map[string]any
+		var record jsonlExportRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatalf("unmarshal jsonl line %q: %v", line, err)
 		}
 
-		switch record["kind"] {
+		switch record.Kind {
 		case "node":
 			nodeCount++
-			nodeIDs[fmt.Sprint(record["id"])] = struct{}{}
+			nodeIDs[record.ID] = struct{}{}
 		case "edge":
 			edgeCount++
-			props, ok := record["properties"].(map[string]any)
-			if !ok {
-				t.Fatalf("jsonl edge missing properties object: %#v", record)
-			}
+			props := decodeExportPropertyMap(t, record.Properties)
 			switch jsonIntValue(t, props["since"]) {
 			case 2020:
 				found2020 = true
-				requireRichEdgeProperties(t, props)
+				requireRichEdgeProperties(t, record.Properties)
 			case 2021:
 				found2021 = true
 			}
 		default:
-			t.Fatalf("unexpected jsonl record kind: %#v", record["kind"])
+			t.Fatalf("unexpected jsonl record kind: %#v", record.Kind)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -751,6 +827,65 @@ func validateJSONLExport(t *testing.T, path string) {
 	if !found2020 || !found2021 {
 		t.Fatalf("expected jsonl export to preserve both parallel edges")
 	}
+}
+
+func readSingleJSONLNodeProperties(t *testing.T, path string) map[string]exportedValue {
+	t.Helper()
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open jsonl export %s: %v", path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var record jsonlExportRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("unmarshal jsonl line %q: %v", line, err)
+		}
+		if record.Kind == "node" {
+			return record.Properties
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan jsonl export %s: %v", path, err)
+	}
+	t.Fatalf("expected at least one node in jsonl export %s", path)
+	return nil
+}
+
+func readSingleCSVNodeProperties(t *testing.T, path string) map[string]exportedValue {
+	t.Helper()
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open csv export %s: %v", path, err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	rows, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("read csv export %s: %v", path, err)
+	}
+	if len(rows) < 2 {
+		t.Fatalf("expected csv export %s to include one data row, got %d rows", path, len(rows))
+	}
+	if len(rows[1]) != 3 {
+		t.Fatalf("unexpected csv node row shape in %s: %#v", path, rows[1])
+	}
+
+	var props map[string]exportedValue
+	if err := json.Unmarshal([]byte(rows[1][2]), &props); err != nil {
+		t.Fatalf("unmarshal csv node properties from %s: %v", path, err)
+	}
+	return props
 }
 
 func validateDOTExport(t *testing.T, path string) {
@@ -817,15 +952,72 @@ func requireGraphCounts(t *testing.T, graph exportedGraph, wantNodes int, wantEd
 	}
 }
 
+func decodeExportPropertyMap(t *testing.T, props map[string]exportedValue) map[string]any {
+	t.Helper()
+	if len(props) == 0 {
+		return map[string]any{}
+	}
+	decoded := make(map[string]any, len(props))
+	for key, value := range props {
+		decoded[key] = decodeExportValue(t, value)
+	}
+	return decoded
+}
+
+func decodeExportValue(t *testing.T, value exportedValue) any {
+	t.Helper()
+	switch value.Kind {
+	case "null":
+		return nil
+	case "bool":
+		return value.Bool
+	case "int":
+		return value.Int
+	case "float":
+		return value.Float
+	case "string":
+		return value.String
+	case "bytes":
+		return append([]byte(nil), value.Bytes...)
+	case "vector":
+		return append([]float32(nil), value.Vector...)
+	case "list":
+		out := make([]any, len(value.List))
+		for i, item := range value.List {
+			out[i] = decodeExportValue(t, item)
+		}
+		return out
+	case "map":
+		return decodeExportPropertyMap(t, value.Map)
+	default:
+		t.Fatalf("unexpected exported value kind %q", value.Kind)
+		return nil
+	}
+}
+
+func requireExportValueKind(t *testing.T, props map[string]exportedValue, key string, want string) exportedValue {
+	t.Helper()
+	value, ok := props[key]
+	if !ok {
+		t.Fatalf("missing exported property %q", key)
+	}
+	if value.Kind != want {
+		t.Fatalf("unexpected exported kind for %q: got %q want %q", key, value.Kind, want)
+	}
+	return value
+}
+
 func requireExportEdgeProperties(t *testing.T, graph exportedGraph) {
 	t.Helper()
 
 	found2020 := false
 	found2021 := false
 	for _, edge := range graph.Edges {
-		switch jsonIntValue(t, edge.Properties["since"]) {
+		props := decodeExportPropertyMap(t, edge.Properties)
+		switch jsonIntValue(t, props["since"]) {
 		case 2020:
 			found2020 = true
+			requireExportValueKind(t, edge.Properties, "since", "int")
 			requireRichEdgeProperties(t, edge.Properties)
 		case 2021:
 			found2021 = true
@@ -836,30 +1028,38 @@ func requireExportEdgeProperties(t *testing.T, graph exportedGraph) {
 	}
 }
 
-func requireRichEdgeProperties(t *testing.T, props map[string]any) {
+func requireRichEdgeProperties(t *testing.T, props map[string]exportedValue) {
 	t.Helper()
 
-	if status := fmt.Sprint(props["status"]); status != "active" {
-		t.Fatalf("expected rich edge status active, got %#v", props["status"])
+	requireExportValueKind(t, props, "status", "string")
+	requireExportValueKind(t, props, "list", "list")
+	requireExportValueKind(t, props, "nested", "map")
+	requireExportValueKind(t, props, "nullable", "null")
+	requireExportValueKind(t, props, "vector", "vector")
+
+	decoded := decodeExportPropertyMap(t, props)
+
+	if status := fmt.Sprint(decoded["status"]); status != "active" {
+		t.Fatalf("expected rich edge status active, got %#v", decoded["status"])
 	}
 
-	listValue, ok := props["list"].([]any)
+	listValue, ok := decoded["list"].([]any)
 	if !ok {
-		t.Fatalf("expected rich edge list property, got %#v", props["list"])
+		t.Fatalf("expected rich edge list property, got %#v", decoded["list"])
 	}
-	if !reflect.DeepEqual(listValue, []any{float64(3), "two", nil}) {
+	if !reflect.DeepEqual(listValue, []any{int64(3), "two", nil}) {
 		t.Fatalf("unexpected rich edge list ordering: %#v", listValue)
 	}
 
-	nestedValue, ok := props["nested"].(map[string]any)
+	nestedValue, ok := decoded["nested"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected rich edge nested property, got %#v", props["nested"])
+		t.Fatalf("expected rich edge nested property, got %#v", decoded["nested"])
 	}
 	if jsonIntValue(t, nestedValue["alpha"]) != 1 || jsonIntValue(t, nestedValue["beta"]) != 2 {
 		t.Fatalf("unexpected rich edge nested property values: %#v", nestedValue)
 	}
 
-	nullableValue, ok := props["nullable"]
+	nullableValue, ok := decoded["nullable"]
 	if !ok {
 		t.Fatalf("missing rich edge nullable property")
 	}
@@ -867,12 +1067,62 @@ func requireRichEdgeProperties(t *testing.T, props map[string]any) {
 		t.Fatalf("expected rich edge nullable property to round-trip as null, got %#v", nullableValue)
 	}
 
-	vectorValue, ok := props["vector"].([]any)
+	vectorValue, ok := decoded["vector"].([]float32)
 	if !ok {
-		t.Fatalf("expected rich edge vector property, got %#v", props["vector"])
+		t.Fatalf("expected rich edge vector property, got %#v", decoded["vector"])
 	}
-	if !reflect.DeepEqual(vectorValue, []any{float64(1.5), float64(2.5)}) {
+	if !reflect.DeepEqual(vectorValue, []float32{1.5, 2.5}) {
 		t.Fatalf("unexpected rich edge vector property: %#v", vectorValue)
+	}
+}
+
+func requireTypedValueKinds(t *testing.T, props map[string]exportedValue) {
+	t.Helper()
+
+	requireExportValueKind(t, props, "bytes_value", "bytes")
+	requireExportValueKind(t, props, "string_value", "string")
+	requireExportValueKind(t, props, "int_value", "int")
+	requireExportValueKind(t, props, "float_value", "float")
+	requireExportValueKind(t, props, "vector_value", "vector")
+	requireExportValueKind(t, props, "list_value", "list")
+	nested := requireExportValueKind(t, props, "nested_value", "map")
+
+	decoded := decodeExportPropertyMap(t, props)
+	if !reflect.DeepEqual(decoded["bytes_value"], []byte{1, 2, 3}) {
+		t.Fatalf("unexpected exported bytes value: %#v", decoded["bytes_value"])
+	}
+	if decoded["string_value"] != "AQID" {
+		t.Fatalf("unexpected exported string value: %#v", decoded["string_value"])
+	}
+	if decoded["int_value"] != int64(1) {
+		t.Fatalf("unexpected exported int value: %#v", decoded["int_value"])
+	}
+	if decoded["float_value"] != float64(1) {
+		t.Fatalf("unexpected exported float value: %#v", decoded["float_value"])
+	}
+	if !reflect.DeepEqual(decoded["vector_value"], []float32{1, 2}) {
+		t.Fatalf("unexpected exported vector value: %#v", decoded["vector_value"])
+	}
+	if !reflect.DeepEqual(decoded["list_value"], []any{float64(1), float64(2)}) {
+		t.Fatalf("unexpected exported list value: %#v", decoded["list_value"])
+	}
+
+	requireExportValueKind(t, nested.Map, "inner_bytes", "bytes")
+	requireExportValueKind(t, nested.Map, "inner_float", "float")
+	requireExportValueKind(t, nested.Map, "inner_list", "list")
+
+	nestedDecoded, ok := decoded["nested_value"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected exported nested map value: %#v", decoded["nested_value"])
+	}
+	if !reflect.DeepEqual(nestedDecoded["inner_bytes"], []byte{9}) {
+		t.Fatalf("unexpected exported nested bytes value: %#v", nestedDecoded["inner_bytes"])
+	}
+	if nestedDecoded["inner_float"] != float64(2) {
+		t.Fatalf("unexpected exported nested float value: %#v", nestedDecoded["inner_float"])
+	}
+	if !reflect.DeepEqual(nestedDecoded["inner_list"], []any{int64(3), nil}) {
+		t.Fatalf("unexpected exported nested list value: %#v", nestedDecoded["inner_list"])
 	}
 }
 
@@ -935,14 +1185,17 @@ func requireCanonicalDumpListAndNull(t *testing.T, graph exportedGraph, nodeID u
 		if node.ID != wantID {
 			continue
 		}
-		listValue, ok := node.Properties["list"].([]any)
+		requireExportValueKind(t, node.Properties, "list", "list")
+		requireExportValueKind(t, node.Properties, "nullable", "null")
+		decoded := decodeExportPropertyMap(t, node.Properties)
+		listValue, ok := decoded["list"].([]any)
 		if !ok {
-			t.Fatalf("expected canonical dump list property on node %s, got %#v", wantID, node.Properties["list"])
+			t.Fatalf("expected canonical dump list property on node %s, got %#v", wantID, decoded["list"])
 		}
-		if !reflect.DeepEqual(listValue, []any{float64(3), "two", nil}) {
+		if !reflect.DeepEqual(listValue, []any{int64(3), "two", nil}) {
 			t.Fatalf("unexpected canonical dump list ordering on node %s: %#v", wantID, listValue)
 		}
-		nullableValue, ok := node.Properties["nullable"]
+		nullableValue, ok := decoded["nullable"]
 		if !ok {
 			t.Fatalf("missing canonical dump nullable property on node %s", wantID)
 		}
@@ -1005,7 +1258,7 @@ func requireRawPropertyKeyOrder(t *testing.T, dumpBytes []byte, nodeID uint64, w
 		if !ok {
 			t.Fatalf("missing nested canonical property %q on node %s", nestedKey, wantID)
 		}
-		nestedKeys, _ := orderedJSONObject(t, nestedRaw)
+		nestedKeys, _ := orderedExportMapKeys(t, nestedRaw)
 		if !reflect.DeepEqual(nestedKeys, wantNestedKeys) {
 			t.Fatalf("unexpected canonical nested key order for node %s property %q: got %#v want %#v", wantID, nestedKey, nestedKeys, wantNestedKeys)
 		}
@@ -1050,7 +1303,7 @@ func requireRawEdgePropertyKeyOrder(t *testing.T, dumpBytes []byte, edgeID uint6
 		if !ok {
 			t.Fatalf("missing nested canonical edge property %q on edge %s", nestedKey, wantID)
 		}
-		nestedKeys, _ := orderedJSONObject(t, nestedRaw)
+		nestedKeys, _ := orderedExportMapKeys(t, nestedRaw)
 		if !reflect.DeepEqual(nestedKeys, wantNestedKeys) {
 			t.Fatalf("unexpected canonical edge nested key order for edge %s property %q: got %#v want %#v", wantID, nestedKey, nestedKeys, wantNestedKeys)
 		}
@@ -1102,6 +1355,20 @@ func orderedJSONObject(t *testing.T, raw json.RawMessage) ([]string, map[string]
 	return keys, values
 }
 
+func orderedExportMapKeys(t *testing.T, raw json.RawMessage) ([]string, map[string]json.RawMessage) {
+	t.Helper()
+
+	valueKeys, valueFields := orderedJSONObject(t, raw)
+	if !reflect.DeepEqual(valueKeys, []string{"kind", "map"}) {
+		t.Fatalf("expected typed map export wrapper, got keys %#v", valueKeys)
+	}
+	mapRaw, ok := valueFields["map"]
+	if !ok {
+		t.Fatalf("typed map export wrapper missing map payload")
+	}
+	return orderedJSONObject(t, mapRaw)
+}
+
 func requireCanonicalDump(t *testing.T, graph exportedGraph, aliceID, bobID uint64) {
 	t.Helper()
 
@@ -1120,7 +1387,9 @@ func requireCanonicalDump(t *testing.T, graph exportedGraph, aliceID, bobID uint
 	if graph.Edges[0].ID == "" || graph.Edges[1].ID == "" {
 		t.Fatalf("expected canonical dump edges to include stable ids, got %#v", graph.Edges)
 	}
-	if jsonIntValue(t, graph.Edges[0].Properties["since"]) != 2020 || jsonIntValue(t, graph.Edges[1].Properties["since"]) != 2021 {
+	firstProps := decodeExportPropertyMap(t, graph.Edges[0].Properties)
+	secondProps := decodeExportPropertyMap(t, graph.Edges[1].Properties)
+	if jsonIntValue(t, firstProps["since"]) != 2020 || jsonIntValue(t, secondProps["since"]) != 2021 {
 		t.Fatalf("expected canonical dump edges sorted deterministically, got %#v", graph.Edges)
 	}
 }

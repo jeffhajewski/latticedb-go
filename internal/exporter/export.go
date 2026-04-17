@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,17 +29,29 @@ type exportedGraph struct {
 }
 
 type exportedNode struct {
-	ID         string         `json:"id"`
-	Labels     []string       `json:"labels"`
-	Properties map[string]any `json:"properties"`
+	ID         string                   `json:"id"`
+	Labels     []string                 `json:"labels"`
+	Properties map[string]exportedValue `json:"properties"`
 }
 
 type exportedEdge struct {
-	ID         string         `json:"id"`
-	Source     string         `json:"source"`
-	Target     string         `json:"target"`
-	Type       string         `json:"type"`
-	Properties map[string]any `json:"properties"`
+	ID         string                   `json:"id"`
+	Source     string                   `json:"source"`
+	Target     string                   `json:"target"`
+	Type       string                   `json:"type"`
+	Properties map[string]exportedValue `json:"properties"`
+}
+
+type exportedValue struct {
+	Kind   string                   `json:"kind"`
+	Bool   bool                     `json:"bool,omitempty"`
+	Int    int64                    `json:"int,omitempty"`
+	Float  float64                  `json:"float,omitempty"`
+	String string                   `json:"string,omitempty"`
+	Bytes  []byte                   `json:"bytes,omitempty"`
+	Vector []float32                `json:"vector,omitempty"`
+	List   []exportedValue          `json:"list,omitempty"`
+	Map    map[string]exportedValue `json:"map,omitempty"`
 }
 
 func Export(dbPath string, format ExportFormat, outputPath string) ([]byte, error) {
@@ -88,11 +101,15 @@ func exportJSONL(graph *store.GraphState, outputPath string) ([]byte, error) {
 	lines := make([][]byte, 0, len(graph.Nodes)+len(graph.Edges))
 	for _, nodeID := range store.SortedNodeIDs(graph) {
 		node := graph.Nodes[nodeID]
+		props, err := exportPropertyMap(node.Properties)
+		if err != nil {
+			return nil, err
+		}
 		line, err := json.Marshal(map[string]any{
 			"kind":       "node",
 			"id":         strconv.FormatUint(node.ID, 10),
 			"labels":     sortedLabels(node.Labels),
-			"properties": exportPropertyMap(node.Properties),
+			"properties": props,
 		})
 		if err != nil {
 			return nil, err
@@ -101,13 +118,17 @@ func exportJSONL(graph *store.GraphState, outputPath string) ([]byte, error) {
 	}
 	for _, edgeID := range store.SortedEdgeIDs(graph) {
 		edge := graph.Edges[edgeID]
+		props, err := exportPropertyMap(edge.Properties)
+		if err != nil {
+			return nil, err
+		}
 		line, err := json.Marshal(map[string]any{
 			"kind":       "edge",
 			"id":         strconv.FormatUint(edge.ID, 10),
 			"source":     strconv.FormatUint(edge.SourceID, 10),
 			"target":     strconv.FormatUint(edge.TargetID, 10),
 			"type":       edge.Type,
-			"properties": exportPropertyMap(edge.Properties),
+			"properties": props,
 		})
 		if err != nil {
 			return nil, err
@@ -172,20 +193,28 @@ func marshalExportGraph(graph *store.GraphState) ([]byte, error) {
 
 	for _, nodeID := range store.SortedNodeIDs(graph) {
 		node := graph.Nodes[nodeID]
+		props, err := exportPropertyMap(node.Properties)
+		if err != nil {
+			return nil, err
+		}
 		exported.Nodes = append(exported.Nodes, exportedNode{
 			ID:         strconv.FormatUint(node.ID, 10),
 			Labels:     sortedLabels(node.Labels),
-			Properties: exportPropertyMap(node.Properties),
+			Properties: props,
 		})
 	}
 	for _, edgeID := range sortedCanonicalEdgeIDs(graph) {
 		edge := graph.Edges[edgeID]
+		props, err := exportPropertyMap(edge.Properties)
+		if err != nil {
+			return nil, err
+		}
 		exported.Edges = append(exported.Edges, exportedEdge{
 			ID:         strconv.FormatUint(edge.ID, 10),
 			Source:     strconv.FormatUint(edge.SourceID, 10),
 			Target:     strconv.FormatUint(edge.TargetID, 10),
 			Type:       edge.Type,
-			Properties: exportPropertyMap(edge.Properties),
+			Properties: props,
 		})
 	}
 	return json.Marshal(exported)
@@ -221,15 +250,19 @@ func sortedCanonicalEdgeIDs(graph *store.GraphState) []uint64 {
 	return edgeIDs
 }
 
-func exportPropertyMap(in map[string]any) map[string]any {
+func exportPropertyMap(in map[string]any) (map[string]exportedValue, error) {
 	if len(in) == 0 {
-		return map[string]any{}
+		return map[string]exportedValue{}, nil
 	}
-	out := make(map[string]any, len(in))
+	out := make(map[string]exportedValue, len(in))
 	for key, value := range in {
-		out[key] = exportValue(value)
+		encoded, err := exportValue(value)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = encoded
 	}
-	return out
+	return out, nil
 }
 
 func sortedLabels(labels []string) []string {
@@ -241,25 +274,52 @@ func sortedLabels(labels []string) []string {
 	return out
 }
 
-func exportValue(value any) any {
+func exportValue(value any) (exportedValue, error) {
 	switch v := value.(type) {
 	case nil, bool, int64, float64, string:
-		return v
-	case []byte:
-		return append([]byte(nil), v...)
-	case []float32:
-		return append([]float32(nil), v...)
-	case []any:
-		out := make([]any, len(v))
-		for i, item := range v {
-			out[i] = exportValue(item)
+		switch value := v.(type) {
+		case nil:
+			return exportedValue{Kind: "null"}, nil
+		case bool:
+			return exportedValue{Kind: "bool", Bool: value}, nil
+		case int64:
+			return exportedValue{Kind: "int", Int: value}, nil
+		case float64:
+			return exportedValue{Kind: "float", Float: value}, nil
+		case string:
+			return exportedValue{Kind: "string", String: value}, nil
 		}
-		return out
+	case []byte:
+		return exportedValue{Kind: "bytes", Bytes: append([]byte(nil), v...)}, nil
+	case []float32:
+		return exportedValue{Kind: "vector", Vector: append([]float32(nil), v...)}, nil
+	case []any:
+		out := make([]exportedValue, len(v))
+		for i, item := range v {
+			encoded, err := exportValue(item)
+			if err != nil {
+				return exportedValue{}, err
+			}
+			out[i] = encoded
+		}
+		return exportedValue{Kind: "list", List: out}, nil
 	case map[string]any:
-		return exportPropertyMap(v)
+		mapped, err := exportPropertyMap(v)
+		if err != nil {
+			return exportedValue{}, err
+		}
+		return exportedValue{Kind: "map", Map: mapped}, nil
 	default:
-		return v
+		normalized, err := store.NormalizeValue(value)
+		if err != nil {
+			return exportedValue{}, err
+		}
+		if reflect.TypeOf(normalized) == reflect.TypeOf(value) {
+			return exportedValue{}, fmt.Errorf("unsupported export value type %T", value)
+		}
+		return exportValue(normalized)
 	}
+	return exportedValue{}, fmt.Errorf("unsupported export value type %T", value)
 }
 
 func writeNodesCSV(graph *store.GraphState, path string) error {
@@ -277,14 +337,18 @@ func writeNodesCSV(graph *store.GraphState, path string) error {
 	}
 	for _, nodeID := range store.SortedNodeIDs(graph) {
 		node := graph.Nodes[nodeID]
-		props, err := json.Marshal(exportPropertyMap(node.Properties))
+		props, err := exportPropertyMap(node.Properties)
+		if err != nil {
+			return err
+		}
+		propsJSON, err := json.Marshal(props)
 		if err != nil {
 			return err
 		}
 		if err := writer.Write([]string{
 			strconv.FormatUint(node.ID, 10),
 			strings.Join(node.Labels, "|"),
-			string(props),
+			string(propsJSON),
 		}); err != nil {
 			return err
 		}
@@ -307,7 +371,11 @@ func writeEdgesCSV(graph *store.GraphState, path string) error {
 	}
 	for _, edgeID := range store.SortedEdgeIDs(graph) {
 		edge := graph.Edges[edgeID]
-		props, err := json.Marshal(exportPropertyMap(edge.Properties))
+		props, err := exportPropertyMap(edge.Properties)
+		if err != nil {
+			return err
+		}
+		propsJSON, err := json.Marshal(props)
 		if err != nil {
 			return err
 		}
@@ -316,7 +384,7 @@ func writeEdgesCSV(graph *store.GraphState, path string) error {
 			strconv.FormatUint(edge.SourceID, 10),
 			strconv.FormatUint(edge.TargetID, 10),
 			edge.Type,
-			string(props),
+			string(propsJSON),
 		}); err != nil {
 			return err
 		}

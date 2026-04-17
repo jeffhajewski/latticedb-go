@@ -315,6 +315,7 @@ Current export behavior establishes several logical invariants worth preserving 
 - parallel edges are preserved as distinct edges
 - edge properties remain attached to the correct edge instance
 - the public `dump` command emits canonical JSON for cross-engine state comparison
+- JSON-based dump/export encode each logical value with an explicit recursive type tag (`null`, `bool`, `int`, `float`, `string`, `bytes`, `vector`, `list`, `map`) so ambiguous pairs such as bytes-versus-string, vector-versus-list, and int-versus-integral-float remain distinguishable
 - canonical dump includes unlabeled nodes
 - canonical dump orders nodes by node ID ascending
 - canonical dump orders edges by source ID, target ID, type name, then edge ID
