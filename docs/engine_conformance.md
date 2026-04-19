@@ -218,6 +218,9 @@ This document does not attempt to restate the full Cypher subset grammar. It fre
 - Query results return the same logical value model, including nested values.
 - Explicit `RETURN ... AS alias` controls the output column name.
 - Portable code should use explicit aliases for result column names.
+- `LIMIT` applies to the produced rows for a `RETURN` clause.
+- `LIMIT 0` returns zero rows.
+- Negative `LIMIT` values are invalid.
 - Without an explicit alias, the current derived-name behavior is not a required cross-engine compatibility guarantee.
 - Unknown relationship types in `MATCH` produce an empty result, not an error.
 
@@ -236,6 +239,7 @@ The following behaviors are part of the contract:
 - `SET target += {...}` merges into the property map on the target
 - `REMOVE target.prop` removes a property
 - `REMOVE target:Label` removes a label
+- On mutation queries with `RETURN`, `LIMIT` truncates the returned rows but does not suppress earlier statement side effects.
 - mutation against a bound edge variable targets the matched stable edge instance, not all parallel edges with the same endpoints
 
 ### Search Operators Inside Queries

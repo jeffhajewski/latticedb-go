@@ -22,6 +22,7 @@ type queryPlan struct {
 	removeClause  *removeClause
 	deleteClause  *deleteClause
 	returnClause  *returnClause
+	hasLimit      bool
 	limit         int
 }
 
@@ -208,10 +209,11 @@ func parseMatchQuery(query string) (*queryPlan, error) {
 		}
 		plan.returnClause = returnClause
 		if hasLimit {
-			limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+			limit, err := parseLimitValue(limitText)
 			if err != nil {
-				return nil, fmt.Errorf("invalid LIMIT %q", limitText)
+				return nil, err
 			}
+			plan.hasLimit = true
 			plan.limit = limit
 		}
 	case " SET ":
@@ -280,10 +282,11 @@ func parseUnwindQuery(query string) (*queryPlan, error) {
 		returnClause: returnClause,
 	}
 	if hasLimit {
-		limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+		limit, err := parseLimitValue(limitText)
 		if err != nil {
-			return nil, fmt.Errorf("invalid LIMIT %q", limitText)
+			return nil, err
 		}
+		plan.hasLimit = true
 		plan.limit = limit
 	}
 	return plan, nil
@@ -309,10 +312,11 @@ func parseCreateQuery(query string) (*queryPlan, error) {
 		}
 		plan.returnClause = returnClause
 		if hasLimit {
-			limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+			limit, err := parseLimitValue(limitText)
 			if err != nil {
-				return nil, fmt.Errorf("invalid LIMIT %q", limitText)
+				return nil, err
 			}
+			plan.hasLimit = true
 			plan.limit = limit
 		}
 		return plan, nil
@@ -383,7 +387,7 @@ func (plan *queryPlan) execute(tx *Tx, params map[string]any) (QueryResult, erro
 	if plan.returnClause == nil {
 		return QueryResult{}, nil
 	}
-	if plan.limit > 0 && len(rows) > plan.limit {
+	if plan.hasLimit && len(rows) > plan.limit {
 		rows = rows[:plan.limit]
 	}
 	return plan.returnClause.render(rows)
@@ -1460,6 +1464,17 @@ func splitLimitClause(text string) (string, string, bool) {
 		return text, "", false
 	}
 	return head, tail, true
+}
+
+func parseLimitValue(limitText string) (int, error) {
+	limit, err := strconv.Atoi(strings.TrimSpace(limitText))
+	if err != nil {
+		return 0, fmt.Errorf("invalid LIMIT %q", limitText)
+	}
+	if limit < 0 {
+		return 0, fmt.Errorf("invalid LIMIT %q", limitText)
+	}
+	return limit, nil
 }
 
 func trimEnclosed(text string, open byte, close byte) (string, error) {

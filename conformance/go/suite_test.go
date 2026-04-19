@@ -759,6 +759,99 @@ func TestConformanceQueryCreateNodeWithLabelsAndProperties(t *testing.T) {
 	}
 }
 
+func TestConformanceQueryLimitZeroAndNegativeValues(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "query_limit.ltdb")
+	db := openDB(t, dbPath, OpenOptions{Create: true})
+	defer closeDB(t, db)
+
+	err := db.Update(func(tx Tx) error {
+		if _, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person"},
+			Properties: map[string]Value{"name": "Alice"},
+		}); err != nil {
+			return err
+		}
+		if _, err := tx.CreateNode(CreateNodeOptions{
+			Labels:     []string{"Person"},
+			Properties: map[string]Value{"name": "Bob"},
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed limit graph: %v", err)
+	}
+
+	matchResult, err := db.Query("MATCH (n:Person) RETURN n.name AS name LIMIT 0", nil)
+	if err != nil {
+		t.Fatalf("match query with LIMIT 0: %v", err)
+	}
+	if !reflect.DeepEqual(matchResult.Columns, []string{"name"}) {
+		t.Fatalf("unexpected match LIMIT 0 columns: %#v", matchResult.Columns)
+	}
+	if len(matchResult.Rows) != 0 {
+		t.Fatalf("expected LIMIT 0 to return no MATCH rows, got %#v", matchResult.Rows)
+	}
+
+	unwindResult, err := db.Query(
+		"UNWIND $rows AS row RETURN row AS value LIMIT 0",
+		map[string]Value{"rows": []Value{"alpha", "beta"}},
+	)
+	if err != nil {
+		t.Fatalf("unwind query with LIMIT 0: %v", err)
+	}
+	if !reflect.DeepEqual(unwindResult.Columns, []string{"value"}) {
+		t.Fatalf("unexpected unwind LIMIT 0 columns: %#v", unwindResult.Columns)
+	}
+	if len(unwindResult.Rows) != 0 {
+		t.Fatalf("expected LIMIT 0 to return no UNWIND rows, got %#v", unwindResult.Rows)
+	}
+
+	createResult, err := db.Query(
+		"CREATE (n:Temp {name: \"CreatedWithZeroLimit\"}) RETURN id(n) AS id LIMIT 0",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create query with LIMIT 0: %v", err)
+	}
+	if !reflect.DeepEqual(createResult.Columns, []string{"id"}) {
+		t.Fatalf("unexpected create LIMIT 0 columns: %#v", createResult.Columns)
+	}
+	if len(createResult.Rows) != 0 {
+		t.Fatalf("expected LIMIT 0 to return no CREATE rows, got %#v", createResult.Rows)
+	}
+
+	createdCount, err := db.Query(
+		"MATCH (n:Temp {name: \"CreatedWithZeroLimit\"}) RETURN count(n) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("query node created by LIMIT 0 create: %v", err)
+	}
+	requireSingleIntResult(t, createdCount, "count", 1)
+
+	if _, err := db.Query("MATCH (n:Person) RETURN n.name AS name LIMIT -1", nil); err == nil {
+		t.Fatalf("expected negative LIMIT on MATCH to fail")
+	}
+
+	if _, err := db.Query(
+		"CREATE (n:Temp {name: \"RejectedNegativeLimit\"}) RETURN id(n) AS id LIMIT -1",
+		nil,
+	); err == nil {
+		t.Fatalf("expected negative LIMIT on CREATE to fail")
+	}
+
+	rejectedCount, err := db.Query(
+		"MATCH (n:Temp {name: \"RejectedNegativeLimit\"}) RETURN count(n) AS count",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("query node rejected by negative LIMIT create: %v", err)
+	}
+	requireSingleIntResult(t, rejectedCount, "count", 0)
+}
+
 func TestConformanceTransactionOwnWritesCommitAndRollback(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "mvcc.ltdb")
 	db := openDB(t, dbPath, OpenOptions{Create: true})

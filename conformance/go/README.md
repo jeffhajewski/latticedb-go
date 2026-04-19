@@ -21,6 +21,7 @@ The suite covers:
 - `IS NULL` / `IS NOT NULL` semantics over query property access results
 - directional traversal and empty results for unknown relationship types
 - query `CREATE` for nodes and edges with labels/property maps
+- `LIMIT 0` returning zero rows, negative `LIMIT` rejection, and mutation-query `LIMIT` affecting returned rows rather than side effects
 - read-only rejection, own-write visibility, commit visibility to newly started transactions, and rollback cleanup
 - query mutation atomicity across failing `CREATE` and `SET` paths
 - duplicate query map keys rejected at public query boundaries
