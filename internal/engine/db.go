@@ -354,16 +354,14 @@ func (tx *Tx) Commit() error {
 		return ErrReadOnly
 	}
 
-	tx.db.graph = tx.graph
 	nextCommitID := tx.db.commitID + 1
-	if err := store.AppendWALCommit(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID); err != nil {
+	if err := store.AppendWALCommit(tx.db.path, tx.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID); err != nil {
 		return err
 	}
-	if err := store.CheckpointGraphState(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID); err != nil {
-		return err
-	}
+	tx.db.graph = tx.graph
 	tx.db.commitID = nextCommitID
 	tx.closed = true
+	_ = store.CheckpointGraphState(tx.db.path, tx.db.graph, tx.db.nextNodeID, tx.db.nextEdgeID, nextCommitID)
 	return nil
 }
 
